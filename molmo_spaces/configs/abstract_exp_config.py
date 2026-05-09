@@ -48,6 +48,7 @@ class MlSpacesExpConfig(Config, ABC):
     policy_dt_ms: float  # Default policy time step
     ctrl_dt_ms: float  # Default control time step
     sim_dt_ms: float  # Default simulation time step
+    proximity_sensor_period_ms: float = 16.6667  # 60 Hz; sub-step recording for is_proximity_sensor cameras (set 0 to record at policy rate only)
     seed: int | None = None  # Random seed for task sampling (if None, generates random seed)
     task_horizon: int | None = None  # Maximum number of steps per episode (if None, no time limit)
     end_on_success: bool = (

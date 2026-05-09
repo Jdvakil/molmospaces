@@ -7,6 +7,7 @@ for use in the data generation pipeline.
 
 import math
 from pathlib import Path
+import numpy as np
 
 from molmo_spaces.configs import BasePolicyConfig, BaseRobotConfig
 from molmo_spaces.configs.base_open_task_configs import ClosingBaseConfig, OpeningBaseConfig
@@ -25,6 +26,7 @@ from molmo_spaces.configs.camera_configs import (
     FrankaOmniPurposeCameraSystem,
     FrankaRandomizedD405D455CameraSystem,
     FrankaRandomizedDroidCameraSystem,
+    FrankaSkinCameraSystem,
     RBY1GoProD455CameraSystem,
 )
 from molmo_spaces.configs.policy_configs import (
@@ -36,6 +38,7 @@ from molmo_spaces.configs.policy_configs import (
 from molmo_spaces.configs.robot_configs import (
     FloatingRUMRobotConfig,
     FrankaRobotConfig,
+    FrankaSkinRobotConfig,
     RBY1MConfig,
     RBY1MOpenCloseConfig,
 )
@@ -225,6 +228,46 @@ class FrankaPickAndPlaceColorDroidDataGenConfig(PickAndPlaceColorDataGenConfig):
     @property
     def tag(self) -> str:
         return "franka_pick_and_place_color_droid_datagen"
+
+@register_config("FrankaSkinPickAndPlaceDataGenConfig")
+class FrankaSkinPickAndPlaceDataGenConfig(PickAndPlaceDataGenConfig):
+    """Pick-and-place data generation with the franka_skin robot (29 SPAD proximity sensors)."""
+
+    scene_dataset: str = "ithor"
+    data_split: str = "train"
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig()
+    camera_config: FrankaSkinCameraSystem = FrankaSkinCameraSystem()
+    # Sample proximity at the policy rate (15 Hz) instead of 60 Hz sub-stepping.
+    # 60 Hz adds 4× redundant renders per policy step across 29 SPADs and dominates wall-clock.
+    proximity_sensor_period_ms: float = 0.0
+    task_horizon: int | None = 300
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_datagen"
+
+
+@register_config("FrankaSkinPickAndPlacePilotConfig")
+class FrankaSkinPickAndPlacePilotConfig(FrankaSkinPickAndPlaceDataGenConfig):
+    """Mass iTHOR pick-and-place collection on the franka_skin pipeline. See README §6.1."""
+    scene_dataset: str = "procthor-objaverse"
+    data_split: str = "train"
+    num_workers: int = 4
+    seed: int | None = np.random.randint(1, 1000000)
+    filter_for_successful_trajectories: bool = True
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=5,
+        house_inds= list(range(1999)),
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR /  "datagen" / "pick_and_place_skin_pilot_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_pilot"
 
 
 @register_config("FrankaOpenDataGenConfig")

@@ -159,6 +159,7 @@ class FrankaRobotConfig(BaseRobotConfig):
             assert self.command_mode["arm"] in ["joint_position", "joint_rel_position"]
 
 
+<<<<<<< HEAD
 class MobileFrankaRobotConfig(BaseRobotConfig):
     robot_cls: type[MobileFrankaRobot] | None = MobileFrankaRobot
     robot_factory: Callable[[MjData, Any], Robot] | None = MobileFrankaRobot
@@ -200,6 +201,12 @@ class MobileFrankaRobotConfig(BaseRobotConfig):
             "ctrlrange": np.pi,
         },
     }
+=======
+class FrankaSkinRobotConfig(FrankaRobotConfig):
+    """Franka FR3 + Robotiq with skin proximity-sensor cameras (29 sensors)."""
+
+    name: str = "franka_skin"
+>>>>>>> 5926a23 (add skin changes)
 
 
 class FrankaCAPRobotConfig(BaseRobotConfig):

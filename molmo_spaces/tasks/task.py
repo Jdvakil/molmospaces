@@ -50,6 +50,26 @@ class BaseMujocoTask(ABC):
             )
         self._n_sim_steps_per_ctrl = int(self._ctrl_dt_ms // sim_dt_ms)
         self._n_ctrl_steps_per_policy = int(exp_config.policy_dt_ms // self._ctrl_dt_ms)
+
+        # Sub-step proximity-depth recording: every N sim steps render the
+        # is_proximity_sensor cameras and stash frames in env._proximity_depth_frames.
+        prox_period_ms = getattr(exp_config, "proximity_sensor_period_ms", 0.0)
+        self._n_sim_steps_per_proximity = (
+            max(1, int(round(prox_period_ms / sim_dt_ms))) if prox_period_ms > 0 else 0
+        )
+        self._proximity_camera_names: list[str] = (
+            [
+                cam.name
+                for cam in (
+                    exp_config.camera_config.cameras
+                    if exp_config.camera_config is not None
+                    else []
+                )
+                if getattr(cam, "is_proximity_sensor", False)
+            ]
+            if self._n_sim_steps_per_proximity > 0
+            else []
+        )
         self._task_horizon = (
             exp_config.task_horizon if exp_config.task_horizon is not None else np.inf
         )
@@ -335,10 +355,19 @@ class BaseMujocoTask(ABC):
         # Physics step (MuJoCo simulation)
         if self._datagen_profiler is not None:
             self._datagen_profiler.start("physics_step")
+        if self._proximity_camera_names:
+            self._env.reset_proximity_depth_buffer(self._proximity_camera_names)
+        sim_steps_in_policy = 0
         for _ in range(self._n_ctrl_steps_per_policy):
             for robot in self._env.robots:
                 robot.compute_control()
             self._env.step(self._n_sim_steps_per_ctrl)
+            sim_steps_in_policy += self._n_sim_steps_per_ctrl
+            if (
+                self._proximity_camera_names
+                and sim_steps_in_policy % self._n_sim_steps_per_proximity == 0
+            ):
+                self._env.record_proximity_depths(self._proximity_camera_names)
         if self._datagen_profiler is not None:
             self._datagen_profiler.end("physics_step")
 

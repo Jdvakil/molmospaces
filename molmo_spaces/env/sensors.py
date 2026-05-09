@@ -12,6 +12,7 @@ from molmo_spaces.env.sensors_cameras import (
     CameraParameterSensor,
     CameraSensor,
     DepthSensor,
+    ProximityDepthBufferSensor,
 )
 from molmo_spaces.robots.abstract import Robot
 from molmo_spaces.tasks.task import BaseMujocoTask
@@ -1110,15 +1111,39 @@ def get_core_sensors(exp_config):
     """
     sensors = []
 
+    # Compute max sub-step count for proximity buffers (so the gymnasium space is bounded).
+    sim_dt_ms = exp_config.sim_dt_ms
+    prox_period_ms = getattr(exp_config, "proximity_sensor_period_ms", 0.0)
+    if prox_period_ms > 0:
+        n_sim_steps_per_prox = max(1, int(round(prox_period_ms / sim_dt_ms)))
+        total_sim_steps = int(exp_config.policy_dt_ms // sim_dt_ms)
+        max_prox_substeps = max(1, total_sim_steps // n_sim_steps_per_prox)
+    else:
+        max_prox_substeps = 1
+
     # Get camera names dynamically from camera config instead of hardcoded list
     for camera_spec in exp_config.camera_config.cameras:
         camera_name = camera_spec.name
 
-        # Camera parameter sensor
+        # Camera parameter sensor (always recorded so we can map depth to world later)
         cam_params = CameraParameterSensor(
             camera_name=camera_name, uuid=f"sensor_param_{camera_name}"
         )
         sensors.append(cam_params)
+
+        # Proximity sensors: skip RGB, record sub-stepped depth via ProximityDepthBufferSensor.
+        # Output is the SPAD sensor's native 8x8 resolution regardless of the global
+        # camera render resolution (we area-average the rendered frame down).
+        if getattr(camera_spec, "is_proximity_sensor", False):
+            sensors.append(
+                ProximityDepthBufferSensor(
+                    camera_name=camera_name,
+                    img_resolution=(8, 8),
+                    max_substeps=max_prox_substeps,
+                    uuid=camera_name,
+                )
+            )
+            continue
 
         # RGB sensor
         cam_rgb = CameraSensor(

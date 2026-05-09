@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
@@ -629,6 +630,9 @@ def save_trajectories(
                 obs_group, episode_data, episode_idx, save_dir, save_file_suffix, logger
             )
 
+            # Save proximity sensor depth (link*_sensor_* tensors not captured above)
+            _save_proximity_data_from_batched(obs_group, episode_data)
+
             # Save actions
             _save_actions_from_batched(episode_group, episode_data, logger)
 
@@ -813,6 +817,25 @@ def _save_sensor_params_from_batched(obs_group, episode_data) -> None:
         for param_type, sensor_tensor in param_sensors.items():
             sensor_numpy = sensor_tensor.detach().cpu().numpy()
             camera_param_group.create_dataset(param_type, data=sensor_numpy, compression=COMPR)
+
+
+_PROXIMITY_NAME_RE = re.compile(r"^link\d+_sensor_\d+$")
+
+
+def _save_proximity_data_from_batched(obs_group, episode_data) -> None:
+    """Save proximity sensor depth tensors (shape T x N_substeps x H x W) to obs/proximity/<name>.
+
+    Proximity-sensor observations don't fit the camera-video save path (they're sub-stepped
+    8x8 depth tensors, not videos), so they're written as plain numpy arrays.
+    """
+    proximity_keys = [k for k in episode_data if _PROXIMITY_NAME_RE.match(k)]
+    if not proximity_keys:
+        return
+    proximity_group = obs_group.create_group("proximity")
+    for sensor_name in proximity_keys:
+        tensor = episode_data[sensor_name]
+        arr = tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else np.asarray(tensor)
+        proximity_group.create_dataset(sensor_name, data=arr, compression=COMPR)
 
 
 def _save_sensor_data_from_batched(

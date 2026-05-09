@@ -23,6 +23,7 @@ from molmo_spaces.configs.camera_configs import (
     BimanualYamCameraSystem,
     FrankaDroidCameraSystem,
     FrankaRandomizedD405D455CameraSystem,
+    FrankaSkinCameraSystem,
     RBY1GoProD455CameraSystem,
     I2rtYamCameraSystem,
 )
@@ -36,6 +37,7 @@ from molmo_spaces.configs.policy_configs import (
 from molmo_spaces.configs.robot_configs import (
     FloatingRUMRobotConfig,
     FrankaRobotConfig,
+    FrankaSkinRobotConfig,
     I2rtYamRobotConfig,
     RBY1Config,
     ActionNoiseConfig,
@@ -44,6 +46,7 @@ from molmo_spaces.configs.robot_configs import (
     BimanualYamRobotConfig,
     FloatingRUMRobotConfig,
     FrankaRobotConfig,
+    FrankaSkinRobotConfig,
     I2rtYamRobotConfig,
     RBY1Config,
     ActionNoiseConfig,
@@ -216,6 +219,10 @@ def setup_config(args: argparse.ArgumentParser) -> MlSpacesExpConfig:
         datagen_cfg.camera_config = FrankaDroidCameraSystem()
         datagen_cfg.camera_config.img_resolution = (1280, 720)
         datagen_cfg.policy_config.phase_timeout = 20.0
+    elif robot == "skin":
+        datagen_cfg.robot_config = FrankaSkinRobotConfig()
+        datagen_cfg.camera_config = FrankaSkinCameraSystem()
+        datagen_cfg.policy_config.phase_timeout = 20.0
     elif robot == "rum":
         datagen_cfg.robot_config = FloatingRUMRobotConfig()
         datagen_cfg.task_sampler_config.robot_object_z_offset = 0
@@ -334,7 +341,7 @@ if __name__ == "__main__":
     args.add_argument("--config", type=str, default=None, help="Load a fixed config")
     args.add_argument("--viewer", action="store_true", help="single step")
     args.add_argument(
-        "--robot", type=str, default="droid", help="franka, droid, rum, rby1, yam, or bimanual_yam"
+        "--robot", type=str, default="droid", help="franka, droid, skin, rum, rby1, yam, or bimanual_yam"
     )
     args.add_argument(
         "--policy",

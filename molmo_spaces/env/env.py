@@ -168,6 +168,16 @@ class CPUMujocoEnv(BaseMujocoEnv):
         self.camera_manager = CameraManager()
         self._renderer: MjAbstractRenderer | None = None
 
+        # Sub-step proximity-depth buffer: dict[camera_name, list[(H, W) float32 frame]].
+        # Cleared/refilled by task.step(); consumed by ProximityDepthBufferSensor.
+        self._proximity_depth_frames: dict[str, list[np.ndarray]] = {}
+
+        # Dedicated low-res renderer for proximity sensors: rendering at native
+        # 8x8 ensures HFOV=VFOV=45deg (square SPAD spec). The global renderer
+        # is at 624x352 (non-square) which would give the wrong HFOV.
+        self._proximity_renderer: mujoco.Renderer | None = None
+        self._proximity_camera_resolution: tuple[int, int] = (8, 8)  # (height, width)
+
         self.object_managers = []
 
         # Cached occupancy map for robot placement (expensive to create)
@@ -182,6 +192,9 @@ class CPUMujocoEnv(BaseMujocoEnv):
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+        if self._proximity_renderer is not None:
+            self._proximity_renderer.close()
+            self._proximity_renderer = None
 
         # Invalidate cached thormap when scene changes
         self._cached_thormap = None
@@ -313,6 +326,60 @@ class CPUMujocoEnv(BaseMujocoEnv):
 
         # Return raw depth in meters (encoding to RGB happens at save time)
         return depth_frame.astype(np.float32)
+
+    def reset_proximity_depth_buffer(self, camera_names: list[str]) -> None:
+        """Clear proximity-depth buffers ahead of a fresh policy step."""
+        self._proximity_depth_frames = {name: [] for name in camera_names}
+
+    def _proximity_cam_full_name(self, registry_name: str) -> str | None:
+        """Look up the MJCF camera name for a proximity sensor (e.g. 'robot_0/link2_sensor_0')."""
+        cfg = getattr(self.config, "camera_config", None)
+        if cfg is None:
+            return None
+        for cam in cfg.cameras:
+            if cam.name == registry_name and getattr(cam, "is_proximity_sensor", False):
+                ns = getattr(cam, "robot_namespace", "") or ""
+                mjcf = getattr(cam, "mjcf_name", cam.name)
+                return f"{ns}{mjcf}"
+        return None
+
+    def record_proximity_depths(self, camera_names: list[str]) -> None:
+        """Render depth at native 8x8 from each proximity sensor and append to buffer.
+
+        Bypasses the global renderer (which is at 624x352, giving HFOV=72deg for
+        our fovy=45 cameras due to non-square aspect). Uses a dedicated 8x8
+        renderer so each proximity sensor gets its true square 45deg FOV.
+
+        Disables visibility of geom group 2 (the cosmetic skin meshes) when
+        rendering: sensors are positioned inside the skin volume, so without
+        this they would see their own skin at ~0 distance instead of the
+        environment.
+        """
+        if self._proximity_renderer is None:
+            h, w = self._proximity_camera_resolution
+            self._proximity_renderer = mujoco.Renderer(self.mj_model, height=h, width=w)
+            self._proximity_renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SKYBOX] = 0
+            self._proximity_scene_option = mujoco.MjvOption()
+            mujoco.mjv_defaultOption(self._proximity_scene_option)
+            self._proximity_scene_option.geomgroup[2] = 0  # hide skin (group=2)
+        self._proximity_renderer.enable_depth_rendering()
+        for name in camera_names:
+            if name not in self.camera_manager.registry:
+                continue
+            full = self._proximity_cam_full_name(name)
+            if full is None:
+                continue
+            try:
+                self._proximity_renderer.update_scene(
+                    self.current_data,
+                    camera=full,
+                    scene_option=self._proximity_scene_option,
+                )
+                depth = self._proximity_renderer.render().astype(np.float32, copy=True)
+            except Exception as e:
+                log.warning(f"native 8x8 render failed for {full}: {e}")
+                continue
+            self._proximity_depth_frames.setdefault(name, []).append(depth)
 
     def render_segmentation_frame(self, camera_name: str) -> np.ndarray:
         """Renders a segmentation frame from the perspective of the specified camera."""

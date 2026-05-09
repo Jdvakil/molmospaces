@@ -25,6 +25,7 @@ class CameraConfig(Config, ABC):
     fov: float | None = None  # Field of view in degrees
     is_warped: bool = False  # Whether camera has lens distortion (e.g., GoPro fisheye)
     record_depth: bool = False  # Whether to record depth images for this camera
+    is_proximity_sensor: bool = False  # If True, depth is recorded at proximity_sensor_period_ms (sub-stepped, multiple frames per policy step) and RGB is skipped
     skip_erosion: bool = (
         False  # Skip erosion for object point sampling (useful for wide FOV cameras)
     )
@@ -382,6 +383,69 @@ class FrankaDroidCameraSystem(CameraSystemConfig):
                 # "__gripper__": 0.001,  # not necessarily visible from this cam - just focus on the object
             },
         ),
+    ]
+
+
+_SKIN_SENSOR_LINK_COUNTS = {2: 7, 3: 8, 5: 6, 6: 8}
+
+
+def _skin_sensor_camera_specs() -> list[AllCameraTypes]:
+    """Return MjcfCameraConfig specs for all 29 skin proximity-sensor cameras.
+
+    Each sensor is an 8x8 depth-only camera with HFOV=45 deg (matches a SPAD
+    proximity sensor with focal_length=10.86mm and horizontal_aperture=9.0mm).
+    """
+    specs: list[AllCameraTypes] = []
+    for link_idx, n_sensors in _SKIN_SENSOR_LINK_COUNTS.items():
+        for sensor_idx in range(n_sensors):
+            cam_name = f"link{link_idx}_sensor_{sensor_idx}"
+            specs.append(
+                MjcfCameraConfig(
+                    name=cam_name,
+                    mjcf_name=cam_name,
+                    robot_namespace="robot_0/",
+                    fov=45.0,
+                    record_depth=True,
+                    is_proximity_sensor=True,
+                )
+            )
+    return specs
+
+
+class FrankaSkinCameraSystem(CameraSystemConfig):
+    """Camera system for Franka with proximity-sensor skin.
+
+    Includes the standard DROID wrist + shoulder cameras for RGB context, plus
+    29 SPAD-style proximity depth cameras embedded in the arm skin (link2/3/5/6).
+
+    Proximity sensor parameters (matching the gentact SPAD spec):
+      - 8x8 depth, HFOV=45 deg (focal_length=10.86mm, horizontal_aperture=9.0mm)
+      - clipping range 0.05-4.0m (handled by global znear/zfar in the scene)
+      - update period 16.67ms (60 Hz) -- consumed by the sub-step recorder when
+        proximity_sensor_period_ms is set; otherwise sampled at the policy rate.
+    """
+
+    img_resolution: tuple[int, int] = (624, 352)
+    cameras: list[AllCameraTypes] = [
+        MjcfCameraConfig(
+            name="wrist_camera",
+            mjcf_name="gripper/wrist_camera",
+            robot_namespace="robot_0/",
+            fov=56.74,
+            record_depth=True,
+        ),
+        RobotMountedCameraConfig(
+            name="exo_camera_1",
+            reference_body_names=["robot_0/fr3_link0"],
+            camera_offset=[0.1, 0.57, 0.66],
+            camera_quaternion=[-0.3633, -0.1241, 0.4263, 0.8191],
+            fov=71.0,
+            record_depth=True,
+            visibility_constraints={
+                "__task_objects__": 0.001,
+            },
+        ),
+        *_skin_sensor_camera_specs(),
     ]
 
 
@@ -947,6 +1011,7 @@ AllCameraSystems: TypeAlias = (
     | FrankaRandomizedD405D455CameraSystem
     | FrankaEasyRandomizedDroidCameraSystem
     | FrankaDroidCameraSystem
+    | FrankaSkinCameraSystem
     | FrankaOmniPurposeCameraSystem
     | FrankaRandomizedDroidCameraSystem
     | FrankaGoProD405D455CameraSystem

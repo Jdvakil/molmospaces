@@ -80,6 +80,61 @@ class DepthSensor(Sensor):
         return np.zeros((height, width), dtype=np.float32)
 
 
+class ProximityDepthBufferSensor(Sensor):
+    """Returns a stack of sub-stepped depth frames captured during the policy step.
+
+    Frames live on env._proximity_depth_frames[camera_name]; populated by
+    task.step() at the configured proximity_sensor_period_ms. Output shape:
+    (n_substeps, H, W) float32 meters where (H, W) is the SPAD output resolution
+    (default 8x8). The renderer produces frames at the global camera resolution;
+    we area-average them down here to the SPAD output dimensions.
+    """
+
+    def __init__(
+        self,
+        camera_name: str = "camera",
+        img_resolution: tuple[int, int] = (8, 8),
+        max_substeps: int = 8,
+        uuid: str | None = None,
+    ) -> None:
+        self.camera_name = camera_name
+        self.img_resolution = img_resolution  # (width, height) of SPAD output
+        self.max_substeps = max_substeps
+
+        if uuid is None:
+            uuid = f"proximity_{camera_name}"
+
+        width, height = img_resolution
+        observation_space = gyms.Box(
+            low=0.0,
+            high=10.0,
+            shape=(max_substeps, height, width),
+            dtype=np.float32,
+        )
+        super().__init__(uuid=uuid, observation_space=observation_space)
+
+    def _downsample(self, frame: np.ndarray) -> np.ndarray:
+        out_w, out_h = self.img_resolution
+        if frame.shape == (out_h, out_w):
+            return frame.astype(np.float32)
+        import cv2
+
+        return cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    def get_observation(self, env, task, batch_index: int = 0, *args, **kwargs) -> np.ndarray:
+        frames = getattr(env, "_proximity_depth_frames", {}).get(self.camera_name, [])
+        out_w, out_h = self.img_resolution
+        out = np.zeros((self.max_substeps, out_h, out_w), dtype=np.float32)
+        if not frames:
+            return out
+        downsampled = [self._downsample(f) for f in frames[: self.max_substeps]]
+        # Right-align: latest frames in the trailing slots, leading slots zero-padded.
+        # For the post-reset call buffer is empty (handled above); for normal steps we
+        # expect exactly max_substeps frames so this is just np.stack.
+        out[-len(downsampled) :] = np.stack(downsampled, axis=0)
+        return out
+
+
 class SegmentationSensor(Sensor):
     """Sensor for segmentation images from MuJoCo, outputs video-compatible arrays."""
 
