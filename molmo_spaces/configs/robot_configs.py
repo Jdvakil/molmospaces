@@ -159,54 +159,11 @@ class FrankaRobotConfig(BaseRobotConfig):
             assert self.command_mode["arm"] in ["joint_position", "joint_rel_position"]
 
 
-<<<<<<< HEAD
-class MobileFrankaRobotConfig(BaseRobotConfig):
-    robot_cls: type[MobileFrankaRobot] | None = MobileFrankaRobot
-    robot_factory: Callable[[MjData, Any], Robot] | None = MobileFrankaRobot
-    robot_namespace: str = "robot_0/"
-    robot_view_factory: RobotViewFactory | None = MobileFrankaDroidRobotView
-    default_world_pose: list[float] = [0, 0, 0, 1, 0, 0, 0]
-    name: str = "franka_droid"
-    robot_xml_path: Path = Path("model.xml")
-    base_size: list[float] = [0.5, 0.5, 0.58]
-    init_qpos: dict[str, list[float]] = {
-        "base": [0, 0, 0],
-        "arm": [0, -0.7853, 0, -2.35619, 0, 1.57079, 0.0],
-        "gripper": [0.00296, 0.00296],
-    }
-    init_qpos_noise_range: dict[str, list[float]] | None = {
-        "arm": [0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175],
-    }
-    command_mode: dict[str, str | None] = {
-        "base": "holo_joint_planar_position",
-        "arm": "joint_position",
-        "gripper": "joint_position",
-    }
-    gravcomp: bool = True
 
-    base_control_params: dict[str, dict[str, float]] = {
-        "base_x_act": {
-            "kp": 25000,
-            "kd": 1,
-            "ctrlrange": 25,
-        },
-        "base_y_act": {
-            "kp": 25000,
-            "kd": 1,
-            "ctrlrange": 25,
-        },
-        "base_theta_act": {
-            "kp": 5000,
-            "kd": 0.5,
-            "ctrlrange": np.pi,
-        },
-    }
-=======
 class FrankaSkinRobotConfig(FrankaRobotConfig):
     """Franka FR3 + Robotiq with skin proximity-sensor cameras (29 sensors)."""
 
     name: str = "franka_skin"
->>>>>>> 5926a23 (add skin changes)
 
 
 class FrankaCAPRobotConfig(BaseRobotConfig):

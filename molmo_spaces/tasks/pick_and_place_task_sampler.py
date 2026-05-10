@@ -16,7 +16,7 @@ from molmo_spaces.tasks.task_sampler_errors import ObjectPlacementError
 from molmo_spaces.utils.constants.simulation_constants import OBJAVERSE_FREE_JOINT_DEFAULT_DAMPING
 from molmo_spaces.utils.lazy_loading_utils import install_uid
 from molmo_spaces.utils.mj_model_and_data_utils import body_base_pos
-from molmo_spaces.utils.mujoco_scene_utils import place_object_near
+from molmo_spaces.utils.mujoco_scene_utils import get_supporting_geom, place_object_near
 from molmo_spaces.utils.object_metadata import ObjectMeta
 from molmo_spaces.utils.synset_utils import get_valid_receptacle_uids
 
@@ -56,6 +56,62 @@ class PickAndPlaceReceptacleTaskSampler(AbstractPickAndPlaceObjectTargetTaskSamp
     def add_auxiliary_objects(self, spec: MjSpec) -> None:
         super().add_auxiliary_objects(spec)
         self._add_receptacles_to_scene(spec)
+
+    def _get_scene_objects(self, env: CPUMujocoEnv, mass_limit=100):
+        # Optional source-surface filter: keep only candidates whose supporting
+        # body's name (case-insensitive prefix, walking up to 3 ancestors) starts
+        # with one of the configured types. Used to bias datagen toward sinks,
+        # shelves, low seats, beds, etc. so the proximity skin is exercised.
+        candidates = super()._get_scene_objects(env, mass_limit=mass_limit)
+
+        surface_types = getattr(
+            self.config.task_sampler_config, "source_surface_types", ()
+        )
+        if not surface_types:
+            return candidates
+
+        from molmo_spaces.tasks.task_sampler_errors import HouseInvalidForTask
+
+        prefixes = tuple(t.lower() for t in surface_types)
+        model = env.current_model
+        data = env.current_data
+
+        kept = []
+        per_type_counts: dict[str, int] = {}
+        for obj in candidates:
+            sg = get_supporting_geom(data, obj.object_id)
+            if sg is None or sg < 1:
+                continue
+            bid = int(model.geom_bodyid[sg])
+            matched_prefix = None
+            for _ in range(4):  # walk up at most 3 levels
+                if bid <= 0:
+                    break
+                bname = model.body(bid).name.lower()
+                for p in prefixes:
+                    if bname.startswith(p):
+                        matched_prefix = p
+                        break
+                if matched_prefix is not None:
+                    break
+                bid = int(model.body_parentid[bid])
+            if matched_prefix is not None:
+                kept.append(obj)
+                per_type_counts[matched_prefix] = per_type_counts.get(matched_prefix, 0) + 1
+
+        log.info(
+            f"[source_surface_types] kept {len(kept)}/{len(candidates)} candidates "
+            f"by prefix; counts={per_type_counts}"
+        )
+        if not kept:
+            # No pickup objects rest on any of the requested surfaces in this
+            # house. Signal house-invalid so the worker advances to the next
+            # house instead of asserting downstream on an empty candidate list.
+            raise HouseInvalidForTask(
+                f"No pickup candidates on requested source surfaces "
+                f"({surface_types}) in this scene"
+            )
+        return kept
 
     @staticmethod
     def receptacle_material_callback(object_spec: mujoco.MjsBody) -> None:

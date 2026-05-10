@@ -263,8 +263,10 @@ def save_house_trajectories(
         gc.collect()
 
     except Exception as e:
-        worker_logger.error(f"Failed to save trajectory data for {house_output_dir.name}: {e}")
-        traceback.print_exc()
+        worker_logger.error(
+            f"Failed to save trajectory data for {house_output_dir.name}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
 
 
 def cleanup_episode_resources(
@@ -975,10 +977,9 @@ class ParallelRolloutRunner:
                         )
 
                 except HouseInvalidForTask as e:
-                    traceback.print_exc()
                     worker_logger.warning(
                         f"Worker {worker_id} house {house_id} episode {episode_idx} "
-                        f"HouseInvalidForTask: {e.reason}"
+                        f"HouseInvalidForTask: {e.reason}\n{traceback.format_exc()}"
                     )
                     house_invalid = True
                     if datagen_profiler is not None:
@@ -987,10 +988,9 @@ class ParallelRolloutRunner:
                         )
 
                 except Exception as e:
-                    traceback.print_exc()
                     worker_logger.error(
                         f"Worker {worker_id} house {house_id} episode {episode_idx} "
-                        f"task sampling error: {str(e)}"
+                        f"task sampling error: {str(e)}\n{traceback.format_exc()}"
                     )
                     num_sequential_task_sampler_failures += 1
                     task_sampling_failed = True
@@ -1084,9 +1084,9 @@ class ParallelRolloutRunner:
 
                     except Exception as e:
                         worker_logger.error(
-                            f"Worker {worker_id} house {house_id} episode {episode_idx} rollout error: {str(e)}"
+                            f"Worker {worker_id} house {house_id} episode {episode_idx} rollout error: {str(e)}\n"
+                            f"{traceback.format_exc()}"
                         )
-                        traceback.print_exc()
                         num_sequential_rollout_failures += 1
 
                         # Report failure for this asset (may lead to dynamic blacklisting)

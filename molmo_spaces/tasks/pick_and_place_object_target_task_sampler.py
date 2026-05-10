@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from molmo_spaces.env.env import CPUMujocoEnv
 from molmo_spaces.env.object_manager import Context
 from molmo_spaces.tasks.pick_task_sampler import PickTaskSampler
+from molmo_spaces.tasks.task_sampler_errors import HouseInvalidForTask
 from molmo_spaces.utils.mj_model_and_data_utils import body_base_pos
 from molmo_spaces.utils.pose import pose_mat_to_7d
 
@@ -129,7 +130,14 @@ class AbstractPickAndPlaceObjectTargetTaskSampler(PickTaskSampler, ABC):
         appropriate task class.
         """
         assert env.current_batch_index == 0
-        assert self.candidate_objects is not None and len(self.candidate_objects) > 0
+        if self.candidate_objects is None or len(self.candidate_objects) == 0:
+            # Candidate pool was empty at init time (filter stripped everything)
+            # or got drained by per-episode _remove_candidate_object failures.
+            # Raise HouseInvalidForTask so the pipeline advances to the next house
+            # cleanly instead of crashing on an AssertionError downstream.
+            raise HouseInvalidForTask(
+                "Candidate pickup pool exhausted in this scene; nothing left to sample"
+            )
 
         om = env.object_managers[env.current_batch_index]
 

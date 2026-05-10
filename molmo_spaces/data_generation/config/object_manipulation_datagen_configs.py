@@ -270,6 +270,72 @@ class FrankaSkinPickAndPlacePilotConfig(FrankaSkinPickAndPlaceDataGenConfig):
         return "franka_skin_pick_and_place_pilot"
 
 
+# Body-name prefixes (case-insensitive) for surfaces where the proximity skin is
+# expected to shine: low seats, beds/baths, sinks, bookshelves, dressers, etc.
+# Excludes flat tables/counters which dominate the unfiltered distribution.
+LOW_SURFACE_PREFIXES: tuple[str, ...] = (
+    "sink",
+    "shelf",
+    "bookshelf",
+    "chair",
+    "armchair",
+    "stool",
+    "sofa",
+    "bed",
+    "bathtub",
+    "toilet",
+    "crapper",
+    "dresser",
+    "chestofdrawers",
+)
+
+
+@register_config("FrankaSkinLowSurfacePickAndPlaceDataGenConfig")
+class FrankaSkinLowSurfacePickAndPlaceDataGenConfig(FrankaSkinPickAndPlaceDataGenConfig):
+    """Pick-and-place biased to low/enclosed source surfaces (sinks, shelves, low seats,
+    beds, bathtubs, toilets, dressers). Filters candidate pickups by the body name of
+    the surface they rest on so the proximity skin gets exercised."""
+
+    scene_dataset: str = "procthor-objaverse"
+    data_split: str = "train"
+    num_workers: int = 4
+    seed: int | None = np.random.randint(1, 1000000)
+    filter_for_successful_trajectories: bool = True
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=5,
+        house_inds=list(range(1999)),
+        max_allowed_sequential_irrecoverable_failures=10000,
+        source_surface_types=LOW_SURFACE_PREFIXES,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_low_surface_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_low_surface"
+
+
+@register_config("FrankaSkinLowSurfacePickAndPlacePilotConfig")
+class FrankaSkinLowSurfacePickAndPlacePilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGenConfig):
+    """Smaller pilot of the low-surface pick-and-place dataset for quick verification."""
+
+    seed: int | None = 7
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=3,
+        house_inds=list(range(200)),
+        max_allowed_sequential_irrecoverable_failures=10000,
+        source_surface_types=LOW_SURFACE_PREFIXES,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_low_surface_pilot_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_low_surface_pilot"
+
+
 @register_config("FrankaOpenDataGenConfig")
 class FrankaOpenDataGenConfig(OpeningBaseConfig):
     """Data generation config for Franka open task."""

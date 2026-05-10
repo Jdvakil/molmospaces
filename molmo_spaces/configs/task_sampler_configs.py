@@ -208,6 +208,11 @@ class PickAndPlaceTaskSamplerConfig(PickTaskSamplerConfig):
     num_place_receptacles: int = 3
     # Auto-advance to next receptacle after this many episodes (0 = disabled)
     episodes_per_receptacle: int = 2
+    # Optional source-surface filter: keep only pickup objects whose supporting body
+    # name (case-insensitive) starts with one of these prefixes. Walks up the body
+    # parent chain a few levels so geoms attached to nested children still match.
+    # Empty/None means no filter (all candidates pass, current default behavior).
+    source_surface_types: tuple[str, ...] = ()
 
 
 class PickAndPlaceNextToTaskSamplerConfig(PickAndPlaceTaskSamplerConfig):
