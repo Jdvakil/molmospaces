@@ -237,9 +237,10 @@ class FrankaSkinPickAndPlaceDataGenConfig(PickAndPlaceDataGenConfig):
     data_split: str = "train"
     robot_config: BaseRobotConfig = FrankaSkinRobotConfig()
     camera_config: FrankaSkinCameraSystem = FrankaSkinCameraSystem()
-    # Sample proximity at the policy rate (15 Hz) instead of 60 Hz sub-stepping.
-    # 60 Hz adds 4× redundant renders per policy step across 29 SPADs and dominates wall-clock.
-    proximity_sensor_period_ms: float = 0.0
+    # 60 Hz sub-stepping (matches abstract_exp_config default; period=0 was a footgun
+    # that disabled proximity recording entirely — see prox_learning README §6.1 / PLA
+    # memory `dataset_zero_proximity_bug.md`). Substep dim is mean-pooled downstream.
+    proximity_sensor_period_ms: float = 16.6667
     task_horizon: int | None = 300
     output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_v1"
 
@@ -268,6 +269,78 @@ class FrankaSkinPickAndPlacePilotConfig(FrankaSkinPickAndPlaceDataGenConfig):
     @property
     def tag(self) -> str:
         return "franka_skin_pick_and_place_pilot"
+
+
+@register_config("FrankaSkinPickAndPlacePilotMediumConfig")
+class FrankaSkinPickAndPlacePilotMediumConfig(FrankaSkinPickAndPlacePilotConfig):
+    """Medium-scale collection (~500 episodes) for first-pass PLA training before the
+    full 1999-house pilot. Smoke (10 houses) already confirmed proximity recording
+    works end-to-end; this is the dataset we actually train on while waiting for full.
+
+    num_workers=2 (intentional): each worker spawns its own MuJoCo simulator + scene
+    loader at ~6-7 GB RSS. On a 62 GB box, num_workers=8 → ~50 GB and OOMs adjacent
+    workloads. Stay at 2 unless on a server with >128 GB RAM."""
+    seed: int | None = 2026
+    num_workers: int = 2
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=5,
+        house_inds=list(range(1, 101)),  # 100 houses × 5 samples = up to 500 episodes
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_pilot_medium_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_pilot_medium"
+
+
+@register_config("FrankaSkinPickAndPlacePilotEvalHoldoutConfig")
+class FrankaSkinPickAndPlacePilotEvalHoldoutConfig(FrankaSkinPickAndPlacePilotConfig):
+    """Held-out 10-house eval set for the franka_skin smoke validation round.
+    Mirrors the smoke training config but on houses 11-20 (disjoint from the
+    1-10 training houses) with a different seed (2027 vs 2026). Used to build
+    a JsonBenchmark for evaluating PLA vs baseline ACT policies under the same
+    robot + camera + proximity setup they were trained on. The cached
+    FrankaPickandPlaceHardBench is built for franka_droid, which has neither
+    our cameras (exo_camera_1, wrist_camera) nor our 29 SPAD sensors."""
+    seed: int | None = 2027
+    num_workers: int = 2
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=4,
+        house_inds=list(range(11, 21)),
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_pilot_eval_holdout_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_pilot_eval_holdout"
+
+
+@register_config("FrankaSkinPickAndPlacePilotSmokeConfig")
+class FrankaSkinPickAndPlacePilotSmokeConfig(FrankaSkinPickAndPlacePilotConfig):
+    """10-house, 4-samples-each smoke test for proximity recording. Run this first to
+    confirm proximity_sensor_period_ms is wired correctly before launching the full
+    pilot. Output is segregated under pick_and_place_skin_pilot_smoke_v1 so it
+    doesn't collide with the full pilot."""
+    seed: int | None = 2026
+    num_workers: int = 2
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=4,
+        house_inds=list(range(1, 11)),
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_pilot_smoke_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_pilot_smoke"
 
 
 # Body-name prefixes (case-insensitive) for surfaces where the proximity skin is
