@@ -1,3 +1,4 @@
+import sys
 from queue import Queue
 from typing import Any, Literal
 
@@ -114,7 +115,12 @@ class MjOpenGLRenderer(MjAbstractRenderer):
             from mujoco import gl_context
 
             self._gl_context = gl_context.GLContext(width, height)  # type: ignore
-            self._context_is_cgl = True
+            # `mujoco.gl_context.GLContext` returns a CGL context only on macOS;
+            # on Linux it picks EGL/GLX based on MUJOCO_GL (env var). Gate the
+            # CGL-specific unlocks on platform so we don't dlopen the macOS
+            # OpenGL.framework on Linux (which would crash with "cannot open
+            # shared object file").
+            self._context_is_cgl = sys.platform == "darwin"
         else:
             from molmo_spaces.renderer.opengl_context import EGLGLContext
 

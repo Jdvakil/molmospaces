@@ -977,11 +977,21 @@ class ParallelRolloutRunner:
                         )
 
                 except HouseInvalidForTask as e:
+                    # Treat HouseInvalidForTask as a recoverable sampler failure
+                    # rather than an immediate house abort. The planner may simply
+                    # have hit a momentary physics-constraint failure on this
+                    # particular sample (e.g. IK failed for preplace pose). With
+                    # samples_per_house>1 we want to keep retrying until
+                    # num_sequential_task_sampler_failures exceeds
+                    # max_allowed_sequential_task_sampler_failures.
                     worker_logger.warning(
                         f"Worker {worker_id} house {house_id} episode {episode_idx} "
-                        f"HouseInvalidForTask: {e.reason}\n{traceback.format_exc()}"
+                        f"HouseInvalidForTask after {len(house_raw_histories)} successful "
+                        f"saves; counting as recoverable sequential failure "
+                        f"({num_sequential_task_sampler_failures + 1}/{max_allowed_sequential_task_sampler_failures}): {e.reason}"
                     )
-                    house_invalid = True
+                    num_sequential_task_sampler_failures += 1
+                    task_sampling_failed = True
                     if datagen_profiler is not None:
                         datagen_profiler.record(
                             "task_sampling_failed", time.perf_counter() - task_sampling_start

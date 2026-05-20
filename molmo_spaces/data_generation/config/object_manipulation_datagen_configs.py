@@ -60,6 +60,7 @@ from molmo_spaces.tasks.pick_and_place_color_task_sampler import PickAndPlaceCol
 from molmo_spaces.tasks.pick_and_place_next_to_task_sampler import PickAndPlaceNextToTaskSampler
 from molmo_spaces.tasks.pick_and_place_task_sampler import (
     PickAndPlaceMultiTaskSampler,
+    PickAndPlaceResampleCandidatesTaskSampler,
     PickAndPlaceTaskSampler,
 )
 from molmo_spaces.tasks.pick_task_sampler import PickTaskSampler
@@ -281,21 +282,217 @@ class FrankaSkinPickAndPlacePilotMediumConfig(FrankaSkinPickAndPlacePilotConfig)
     loader at ~6-7 GB RSS. On a 62 GB box, num_workers=8 → ~50 GB and OOMs adjacent
     workloads. Stay at 2 unless on a server with >128 GB RAM."""
     seed: int | None = 2026
-    num_workers: int = 2
+    num_workers: int = 1
     task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
         task_sampler_class=PickAndPlaceTaskSampler,
         pickup_types=PICK_AND_PLACE_OBJECTS,
-        samples_per_house=5,
-        house_inds=list(range(1, 101)),  # 100 houses × 5 samples = up to 500 episodes
+        samples_per_house=1,
+        house_inds=[1],  #
         max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        #randomize_textures=True,
+        randomize_lighting=True,
+        #randomize_textures_all = True,
     )
-    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_pilot_medium_v1"
+    output_dir: Path = ASSETS_DIR / "datagen" / "mug_house_1_random_everything"
 
     @property
     def tag(self) -> str:
         return "franka_skin_pick_and_place_pilot_medium"
 
 
+@register_config("FrankaSkinPickAndPlaceOneHouseMugConfig")
+class FrankaSkinPickAndPlaceOneHouseMugConfig(FrankaSkinPickAndPlacePilotConfig):
+    """Single-house single-task collection for the vanilla-ACT reproduction baseline.
+
+    ONE house (house_1), ONE pickup type (mug), 250 episodes. With aggressive
+    per-attempt randomization so the resulting dataset is not a degenerate
+    near-identical replay (which previously produced 0% eval success — see
+    PLA memory `dataset_dup250_duplicate_demos`).
+
+    Randomization sources (all per-attempt unless noted):
+      - textures (scene + robot)            -> randomize_textures / randomize_robot_textures
+      - lighting                            -> randomize_lighting
+      - object/robot dynamics               -> randomize_dynamics
+      - object placement & robot base pose  -> sampled in PickAndPlaceTaskSampler
+      - initial arm qpos noise              -> FrankaRobotConfig.init_qpos_noise_range
+      - per-step TCP-bounded action noise   -> robot_config.action_noise_config (enabled by default)
+
+    Throughput notes (RTX 4090 / 48 CPU / 62 GB RAM):
+      - As shipped, this config is single-worker single-house: ~190 s per
+        successful 300-step rollout → ~13 h for 250 episodes overnight.
+      - For 4x parallelism, do NOT use `num_workers>1` with duplicate
+        `house_inds=[1,1,1,1]`: every worker calls
+        `setup_house_dirs(house_id=1)` and clobbers the others'
+        `house_1/episode_*.mp4` and `trajectories_batch_1_of_1.h5`. Instead
+        launch 4 separate processes with disjoint `output_dir`s, e.g. via
+        `scripts/run_v3_parallel.py`, then merge with
+        `scripts/merge_v3_to_act_style.py`. ~3.3 h wall-clock for 250 ep.
+      - `task_sampler_class=PickAndPlaceResampleCandidatesTaskSampler` is
+        required: the default sampler permanently blacklists pickup
+        candidates after robot-placement failures, which strands single-house
+        runs at 1/N successful saves once the (small) candidate pool drains.
+      - max_total_attempts_multiplier=25 buys headroom for the higher
+        rejection rate from per-attempt randomization without burning budget.
+    """
+    seed: int | None = 2026
+    num_workers: int = 1
+    # `collision_free_pose_limit` lives on the exp config (not task sampler
+    # config). Default of 3 makes place_robot_near give up after finding
+    # 3 collision-free poses, so visibility-check fails out without
+    # exhausting `max_robot_placement_attempts`. Bumped to 30 so the
+    # planner actually uses the placement-attempt budget for finding a
+    # visible angle on house_1's tricky mug spawn (bench 20260516_2354).
+    collision_free_pose_limit: int = 30
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceResampleCandidatesTaskSampler,
+        pickup_types=["mug"],
+        samples_per_house=250,
+        house_inds=[1],
+        max_allowed_sequential_task_sampler_failures=2000,
+        max_allowed_sequential_rollout_failures=2000,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        max_total_attempts_multiplier=25,
+        # Effectively disable per-asset blacklisting: house_1's 2 mugs are
+        # known-good and we want them reused indefinitely. Default of 10
+        # bricks the run after ~5-8 successes (see parallel_20260516_182123).
+        max_asset_failures=10_000,
+        # The fixed exo_camera_1 offset means SOME house_1 mug spawn poses are
+        # only visible from a narrow band of robot placements. Default 10
+        # samples isn't enough; bump to 80 so the planner has a real chance
+        # to find a placement that satisfies visibility. Also requires
+        # bumping collision_free_pose_limit (above) so the placement loop
+        # doesn't early-exit at 3 candidates.
+        max_robot_placement_attempts=80,
+        base_pose_sampling_radius_range=(0.0, 1.2),
+        # Both mugs in house_1 have spawn positions where NO robot placement
+        # within the search radius satisfies the visibility constraint
+        # (verified bench_v3_v2_20260516_235649: 30/30 collision-free poses
+        # had visibility=0.000 for mug_ac3a and mug_3eb). The scripted
+        # teleop policy uses ground-truth pose and doesn't need visibility
+        # to succeed; the ACT policy at eval time is the only consumer of
+        # the visibility constraint, and "mug barely visible at t=0" is a
+        # tolerable / arguably desirable diversity signal for training.
+        check_robot_placement_visibility=False,
+        randomize_textures=True,
+        randomize_robot_textures=True,
+        randomize_lighting=True,
+        randomize_dynamics=True,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_one_house_mug_v3"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_one_house_mug"
+
+
+@register_config("FrankaSkinPickAndPlaceOneHouseMugFastConfig")
+class FrankaSkinPickAndPlaceOneHouseMugFastConfig(FrankaSkinPickAndPlaceOneHouseMugConfig):
+    """Faster variant of FrankaSkinPickAndPlaceOneHouseMugConfig with texture
+    randomization disabled.
+
+    Texture rebinds (scene + robot) are the single most expensive per-attempt
+    randomization in the MuJoCo classic renderer and the least load-bearing
+    for behavior cloning on a fixed camera setup on a fixed scene — the
+    policy sees a static viewpoint of a static room, so re-skinning walls
+    and the Franka doesn't change the task-relevant feature distribution.
+
+    Diversity preserved (these are what prevented the dataset_dup250 ACT
+    collapse, not textures):
+      - lighting                            -> randomize_lighting=True
+      - dynamics                            -> randomize_dynamics=True
+      - object/robot placement & base pose  -> task sampler
+      - initial arm qpos noise              -> FrankaRobotConfig defaults
+      - per-step TCP-bounded action noise   -> robot_config.action_noise_config
+
+    Validation protocol before committing to a 250-ep run:
+      1. Collect 50 ep with FrankaSkinPickAndPlaceOneHouseMugFastPilotConfig
+         (below).
+      2. Train vanilla ACT on those 50.
+      3. Compare eval success against a 50-ep ACT trained on v3
+         (textures-on parent). If within noise -> textures aren't
+         load-bearing, run the full 250 here.
+
+    Expected speedup is empirical, not theoretical: profile a 5-episode
+    sample of v3 vs this and measure. My prior is 1.5-2.5x per-rollout,
+    but it depends on how much of v3's 190 s/rollout was actually
+    texture-rebind vs other rendering / proximity-substepping / placement
+    search. If the speedup is <1.5x, the bottleneck is elsewhere and you
+    should profile before chasing it.
+
+    Knob NOT changed but worth tuning next if you need more speed:
+      - max_robot_placement_attempts=80 + collision_free_pose_limit=30
+        were tuned for visibility-ON case. With check_robot_placement_visibility
+        already False here, both are likely overprovisioned. Try halving
+        them in a follow-up config once this one is validated.
+
+    Output is segregated to pick_and_place_one_house_mug_v4 so it does not
+    collide with the v3 textures-on dataset.
+    """
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceResampleCandidatesTaskSampler,
+        pickup_types=["mug"],
+        samples_per_house=250,
+        house_inds=[1],
+        max_allowed_sequential_task_sampler_failures=2000,
+        max_allowed_sequential_rollout_failures=2000,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        max_total_attempts_multiplier=25,
+        max_asset_failures=10_000,
+        max_robot_placement_attempts=80,
+        base_pose_sampling_radius_range=(0.0, 1.2),
+        check_robot_placement_visibility=False,
+        randomize_textures=False,         # <-- changed (was True)
+        randomize_robot_textures=False,   # <-- changed (was True)
+        randomize_lighting=True,
+        randomize_dynamics=True,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_one_house_mug_v4"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_one_house_mug_fast"
+
+
+@register_config("FrankaSkinPickAndPlaceOneHouseMugFastPilotConfig")
+class FrankaSkinPickAndPlaceOneHouseMugFastPilotConfig(
+    FrankaSkinPickAndPlaceOneHouseMugFastConfig
+):
+    """50-episode pilot of the textures-off variant for parity validation.
+
+    Use this to verify that an ACT trained on textures-off data matches
+    eval performance of an ACT trained on the textures-on v3 data, before
+    burning compute on the full 250-ep collection. Different seed (2027)
+    from the parent so the 50 episodes are not a prefix of any 250-ep run.
+
+    Output is segregated to pick_and_place_one_house_mug_v4_pilot.
+    """
+    seed: int | None = 2027
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceResampleCandidatesTaskSampler,
+        pickup_types=["mug"],
+        samples_per_house=50,             # <-- changed (was 250)
+        house_inds=[1],
+        max_allowed_sequential_task_sampler_failures=2000,
+        max_allowed_sequential_rollout_failures=2000,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        max_total_attempts_multiplier=25,
+        max_asset_failures=10_000,
+        max_robot_placement_attempts=80,
+        base_pose_sampling_radius_range=(0.0, 1.2),
+        check_robot_placement_visibility=False,
+        randomize_textures=False,
+        randomize_robot_textures=False,
+        randomize_lighting=True,
+        randomize_dynamics=True,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_one_house_mug_v4_pilot"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_one_house_mug_fast_pilot"
 @register_config("FrankaSkinPickAndPlacePilotEvalHoldoutConfig")
 class FrankaSkinPickAndPlacePilotEvalHoldoutConfig(FrankaSkinPickAndPlacePilotConfig):
     """Held-out 10-house eval set for the franka_skin smoke validation round.

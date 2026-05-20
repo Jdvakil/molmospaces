@@ -977,7 +977,7 @@ class PickTaskSampler(BaseMujocoTaskSampler):
         robot_placed = env.place_robot_near(
             robot_view=robot_view,
             target=pickup_obj,
-            max_tries=10,  # Use config value or reasonable default
+            max_tries=self.config.task_sampler_config.max_robot_placement_attempts,
             sampling_radius_range=self.config.task_sampler_config.base_pose_sampling_radius_range,
             robot_safety_radius=self.config.task_sampler_config.robot_safety_radius,
             preserve_z=initial_robot_z,

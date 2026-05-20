@@ -463,6 +463,43 @@ class PickAndPlaceTaskSampler(PickAndPlaceReceptacleTaskSampler):
     pass
 
 
+class PickAndPlaceResampleCandidatesTaskSampler(PickAndPlaceTaskSampler):
+    """Re-populates `candidate_objects` AND clears all per-asset failure
+    counters / dynamic blacklists before every `_sample_task` attempt.
+
+    There are TWO levels of permanent blacklist that strand single-house
+    runs once the per-asset/per-house failure counters fill up:
+
+    1. `candidate_objects` (per-scene): every `_remove_candidate_object`
+       call permanently shrinks the list. With only 2 mugs in house_1, a
+       handful of bad randomization rolls empties the list.
+
+    2. `_dynamic_blacklist` + `_asset_failure_counts` (per-asset, per
+       task-sampler lifetime): every robot-placement failure and every
+       in-rollout IK failure increments the asset counter. After
+       `max_asset_failures=10` (default), the asset is permanently
+       blacklisted. With 2 mugs and IK rejecting ~50% of randomized
+       scenes, both mugs hit the threshold within ~5-10 successful saves
+       and the worker burns the rest of its attempt budget on instant
+       `HouseInvalidForTask` (verified 2026-05-16 parallel_20260516_182123).
+
+    For single-house single-pickup-type collection (e.g.
+    `pickup_types=["mug"]` × house_1) we know the assets are usable; the
+    blacklist is actively harmful. This sampler clears all three pieces
+    of state per attempt. The cost is a `_get_scene_objects` call per
+    attempt (~ms, negligible vs minutes-long rollouts)."""
+
+    def _sample_task(self, env: CPUMujocoEnv):
+        candidates = self._get_scene_objects(env)
+        candidates = self.balance_sample_names(candidates)
+        np.random.shuffle(candidates)
+        self.candidate_objects = candidates
+        self._grasp_failure_counts = {}
+        self._dynamic_blacklist.clear()
+        self._asset_failure_counts.clear()
+        return super()._sample_task(env)
+
+
 import copy
 
 from molmo_spaces.tasks.llm_task_utils import generate_llm_task_from_summaries
