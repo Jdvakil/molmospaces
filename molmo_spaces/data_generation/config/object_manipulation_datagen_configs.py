@@ -287,7 +287,7 @@ class FrankaSkinPickAndPlacePilotMediumConfig(FrankaSkinPickAndPlacePilotConfig)
         task_sampler_class=PickAndPlaceTaskSampler,
         pickup_types=PICK_AND_PLACE_OBJECTS,
         samples_per_house=1,
-        house_inds=[1],  #
+        house_inds=[3],  #
         max_allowed_sequential_irrecoverable_failures=10000,
         robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
         robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
@@ -296,7 +296,7 @@ class FrankaSkinPickAndPlacePilotMediumConfig(FrankaSkinPickAndPlacePilotConfig)
         randomize_lighting=True,
         #randomize_textures_all = True,
     )
-    output_dir: Path = ASSETS_DIR / "datagen" / "mug_house_1_random_everything"
+    output_dir: Path = ASSETS_DIR / "datagen" / "mug_house_3_random_everything"
 
     @property
     def tag(self) -> str:
