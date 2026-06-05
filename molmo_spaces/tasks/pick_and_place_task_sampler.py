@@ -500,6 +500,79 @@ class PickAndPlaceResampleCandidatesTaskSampler(PickAndPlaceTaskSampler):
         return super()._sample_task(env)
 
 
+class PickAndPlaceFixedTaskSampler(PickAndPlaceResampleCandidatesTaskSampler):
+    """Locks the sampled task (pickup object + place receptacle) per house.
+
+    Every episode in a house collects the *same* skill: pick THE same object
+    and place it on/in THE same receptacle. Visual diversity (textures,
+    lighting, robot pose, receptacle position) is still randomized per
+    attempt — only the task identity is frozen. Intended for single-house
+    single-skill datasets (e.g. ``pickup_types=["mug"]`` x house_1, 250x) used
+    for proximity-vs-RGB ablations, where a drifting pickup object or
+    auto-advancing receptacle would contaminate the comparison.
+
+    Without this, the task identity drifts across episodes for two reasons:
+
+    1. ``task_config`` is reset to a clean preset (``pickup_obj_name=None``)
+       on every scene reuse (see ``task_sampler.sample_task``), so the pick
+       loop re-cycles a freshly shuffled candidate each episode.
+    2. ``PickAndPlaceReceptacleTaskSampler`` auto-advances
+       ``place_receptacle_name`` every ``episodes_per_receptacle`` episodes.
+
+    This sampler captures the (object, receptacle) chosen by the *first*
+    successful sample in a house and re-pins both before every subsequent
+    sample. It also forces ``episodes_per_receptacle=0`` so the receptacle
+    never auto-advances. The lock resets automatically when the house changes,
+    so multi-house runs lock one task per house.
+    """
+
+    def __init__(self, config: "PickAndPlaceDataGenConfig") -> None:
+        super().__init__(config)
+        # Pin point for the current house; (None, None) means "not yet locked".
+        self._locked_pickup_obj_name: str | None = None
+        self._locked_receptacle_name: str | None = None
+        self._locked_house_index: int | None = None
+        # Freeze receptacle auto-advance — the lock owns the receptacle choice.
+        self.config.task_sampler_config.episodes_per_receptacle = 0
+
+    def _sample_task(self, env: CPUMujocoEnv):
+        # New house -> drop the previous house's lock and re-lock from scratch.
+        if self._locked_house_index != self.current_house_index:
+            self._locked_pickup_obj_name = None
+            self._locked_receptacle_name = None
+            self._locked_house_index = self.current_house_index
+
+        # sample_task() has already reset task_config to the clean preset
+        # (pickup_obj_name=None) at this point, so re-inject the lock here.
+        # A non-None pickup_obj_name makes the pick loop's keep_task_cfg=True,
+        # which forces the same object instead of cycling candidates.
+        if self._locked_pickup_obj_name is not None:
+            self.config.task_config.pickup_obj_name = self._locked_pickup_obj_name
+        if (
+            self._locked_receptacle_name is not None
+            and self._locked_receptacle_name in self._receptacle_names
+        ):
+            self.place_receptacle_name = self._locked_receptacle_name
+            self._current_receptacle_index = self._receptacle_names.index(
+                self._locked_receptacle_name
+            )
+
+        task = super()._sample_task(env)
+
+        # First successful sample in this house: capture what was chosen so
+        # every later episode reproduces it.
+        if self._locked_pickup_obj_name is None:
+            self._locked_pickup_obj_name = self.config.task_config.pickup_obj_name
+            self._locked_receptacle_name = self.place_receptacle_name
+            log.info(
+                f"[FixedTask] Locked task for house {self.current_house_index}: "
+                f"pick '{self._locked_pickup_obj_name}' -> place "
+                f"'{self._locked_receptacle_name}'"
+            )
+
+        return task
+
+
 import copy
 
 from molmo_spaces.tasks.llm_task_utils import generate_llm_task_from_summaries

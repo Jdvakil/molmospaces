@@ -15,7 +15,7 @@ class PickAndPlaceDataGenConfig(PickBaseConfig):
     task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
         task_sampler_class=PickAndPlaceTaskSampler,
         pickup_types=[],
-        samples_per_house=20,
+        samples_per_house=1,
     )
     task_config: PickAndPlaceTaskConfig = PickAndPlaceTaskConfig(task_cls=PickAndPlaceTask)
     policy_config: PickAndPlacePlannerPolicyConfig = PickAndPlacePlannerPolicyConfig()

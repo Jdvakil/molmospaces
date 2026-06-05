@@ -97,6 +97,10 @@ class BaseMujocoTask(ABC):
         self.terminal_cache: list[list[bool]] = []
         self.truncated_cache: list[list[bool]] = []
         self.success_cache: list[list[bool]] = []
+        # Per-step robot<->environment contact counts (one int per batch env), used
+        # for the collision metric. Aligned with observation_cache.
+        self.collision_cache: list[list[int]] = []
+        self._last_collision_counts: list[int] = [0] * self._env.n_batch
 
         # Policy completion tracking
         self._policy_done = False
@@ -217,6 +221,9 @@ class BaseMujocoTask(ABC):
         reward = self.get_reward()
         terminated = self.is_terminal()
         truncated = self.is_timed_out()
+        # Collision metric: count robot<->environment contacts at the current state
+        # (computed before get_info so it can be surfaced there too).
+        self._last_collision_counts = self._count_step_collisions()
         info = self.get_info()
         # TODO: do per-environment success tracking, this only does for index 0
         success = np.full(terminated.shape, fill_value=self.judge_success())
@@ -227,6 +234,7 @@ class BaseMujocoTask(ABC):
         self.terminal_cache.append(terminated)
         self.truncated_cache.append(truncated)
         self.success_cache.append(success)
+        self.collision_cache.append(self._last_collision_counts)
 
         return observation, reward, terminated, truncated, info
 
@@ -248,6 +256,8 @@ class BaseMujocoTask(ABC):
         self.terminal_cache = []
         self.truncated_cache = []
         self.success_cache = []
+        self.collision_cache = []
+        self._last_collision_counts = [0] * self._env.n_batch
         self._policy_done = False
         self._done_action_received = False
 
@@ -441,6 +451,21 @@ class BaseMujocoTask(ABC):
             for k in filtered_exprs
         }
 
+    def _count_step_collisions(self) -> list[int]:
+        """Per-step robot<->environment contact count for the collision metric.
+
+        Returns one int per batch env. The underlying MuJoCo model/data is shared,
+        so the single-robot count ("robot_0/") is replicated across the batch (datagen
+        runs with n_batch=1). Never raises: on any error it returns zeros so a step is
+        not aborted by metric collection.
+        """
+        try:
+            count = self._env.count_robot_environment_contacts("robot_0/")
+        except Exception as e:  # pragma: no cover - defensive, metric must not break rollout
+            log.debug(f"collision metric: count_robot_environment_contacts failed: {e}")
+            count = 0
+        return [int(count)] * self._env.n_batch
+
     def get_info(self) -> list[dict[str, Any]]:
         """
         Override this to add custom metrics.
@@ -450,6 +475,9 @@ class BaseMujocoTask(ABC):
             {
                 "cumulative_reward": self._cumulative_reward[i],
                 "num_steps_taken": self._num_steps_taken[i],
+                "collision_count": self._last_collision_counts[i]
+                if i < len(self._last_collision_counts)
+                else 0,
             }
             for i in range(self._env.n_batch)
         ]
@@ -492,8 +520,32 @@ class BaseMujocoTask(ABC):
         )
 
         history["obs_scene"] = self.get_obs_scene()
+        history["obs_scene"]["collision_metrics"] = self._summarize_collisions()
 
         return history
+
+    def _summarize_collisions(self) -> dict[str, Any]:
+        """Aggregate the per-step collision cache into a per-episode metric.
+
+        Reported for env 0 (datagen uses n_batch=1). Stored under obs_scene so it is
+        persisted in the trajectory's JSON blob without changing the save path.
+        Keys:
+          - collided: bool, any robot<->environment contact occurred this episode
+          - n_collision_steps: number of steps with >=1 such contact
+          - total_contacts: sum of contact counts over all steps
+          - n_steps: number of recorded steps
+          - per_step_contacts: full per-step timeseries (ints)
+        """
+        per_step = [int(c[0]) for c in self.collision_cache if len(c) > 0]
+        n_collision_steps = int(sum(1 for c in per_step if c > 0))
+        total_contacts = int(sum(per_step))
+        return {
+            "collided": bool(n_collision_steps > 0),
+            "n_collision_steps": n_collision_steps,
+            "total_contacts": total_contacts,
+            "n_steps": len(per_step),
+            "per_step_contacts": per_step,
+        }
 
     def close(self):
         # Clear any MlSpacesObject references

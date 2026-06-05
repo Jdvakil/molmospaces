@@ -754,6 +754,48 @@ class CPUMujocoEnv(BaseMujocoEnv):
 
         return collision_found
 
+    def count_robot_environment_contacts(self, robot_namespace: str = "robot_0/") -> int:
+        """Count active contacts between the robot and the (non-floor) environment.
+
+        This is the per-step "collision metric". It mirrors the root-body logic of
+        ``check_robot_collision_in_current_pose`` but, instead of short-circuiting on
+        the first hit, it counts every penetrating contact (``dist <= 0``) in which
+        exactly one side is a robot body and the other side is neither the robot
+        (self-collision) nor the floor. Contacts with the manipulated object are
+        included (they are part of the environment).
+
+        Works regardless of whether the placement collision check is disabled, because
+        MuJoCo contact detection is independent of the task-sampler guard.
+        """
+        model = self.current_model
+        data = self.current_data
+        contacts = data.contact
+
+        n_contacts = 0
+        for i in range(data.ncon):
+            contact = contacts[i]
+            if contact.dist > 0:  # Only count actual (penetrating) contacts
+                continue
+
+            root1_id = model.body_rootid[model.geom_bodyid[contact.geom1]]
+            root2_id = model.body_rootid[model.geom_bodyid[contact.geom2]]
+            name1 = model.body(root1_id).name
+            name2 = model.body(root2_id).name
+
+            robot1 = name1.startswith(robot_namespace)
+            robot2 = name2.startswith(robot_namespace)
+            # Skip self-collisions (both robot) and env-env contacts (neither robot).
+            if robot1 == robot2:
+                continue
+
+            other_body_name = name2 if robot1 else name1
+            if "floor" in other_body_name.lower():
+                continue
+
+            n_contacts += 1
+
+        return n_contacts
+
     def get_thormap(
         self, agent_radius: float = 0.35, px_per_m: int = 200
     ) -> "ProcTHORMap | iTHORMap":
@@ -1017,8 +1059,11 @@ class CPUMujocoEnv(BaseMujocoEnv):
                         f"[PLACE_ROBOT_NEAR] Attempt {attempt + 1}: pos={robot_base_pos} yaw={np.degrees(robot_base_yaw):.1f}deg"
                     )
 
-                    # Check for collisions
-                    if not self.check_if_robot_collision_at_base_pose(
+                    # Check for collisions (skipped entirely when collision checks are
+                    # disabled, so every sampled pose is accepted as a candidate).
+                    if getattr(
+                        self.config, "disable_collision_checks", False
+                    ) or not self.check_if_robot_collision_at_base_pose(
                         robot_view, robot_pose, "robot_0/"
                     ):
                         # Valid collision-free placement found - add to candidates

@@ -1,1 +1,1 @@
-ROOM_TYPES = ["Kitchen", "LivingRoom", "Bedroom", "Bathroom"]
+ROOM_TYPES = ["Kitchen"]

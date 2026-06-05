@@ -55,6 +55,7 @@ class MlSpacesExpConfig(Config, ABC):
         False  # Whether to end episode immediately upon success (overrides task_horizon if True)
     )
     collision_free_pose_limit: int = 3
+    disable_collision_checks: bool = False  # If True, the task sampler accepts robot base placements even when they collide with the environment (no collision rejection in place_robot_near). Lets the robot operate in collision-prone configurations so the collision metric is meaningful. MuJoCo contact detection stays ON so collisions are still recorded.
 
     # Scene configuration
     scene_dataset: str  # Scenes to use, e.g. ithor, procthor-10k, procthor-objaverse. If "user", use the scene_xml_paths in task_sampler_config.
