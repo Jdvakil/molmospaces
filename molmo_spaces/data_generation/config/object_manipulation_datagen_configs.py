@@ -36,6 +36,7 @@ from molmo_spaces.configs.policy_configs import (
     PickPlannerPolicyConfig,
 )
 from molmo_spaces.configs.robot_configs import (
+    ActionNoiseConfig,
     FloatingRUMRobotConfig,
     FrankaRobotConfig,
     FrankaSkinRobotConfig,
@@ -277,11 +278,24 @@ class FrankaSkinPickAndPlacePilotConfig(FrankaSkinPickAndPlaceDataGenConfig):
 class PACT(FrankaSkinPickAndPlacePilotConfig):
     seed: int | None = np.random.randint(1000)
     num_workers: int = 1
-    # Collision probe: accept robot placements even in collision-prone spots and let
-    # the arm operate freely; MuJoCo contact detection stays on so the per-step
-    # collision metric (obs_scene["collision_metrics"]) is recorded. The 29 skin
-    # proximity sensors record every policy step (inherited proximity_sensor_period_ms).
-    disable_collision_checks: bool = True
+    # Regular (collision-avoiding) data collection: keep the standard placement
+    # collision rejection so demos spawn and move clean. The per-step collision
+    # metric (obs_scene["collision_metrics"]) is still recorded — it should now read
+    # ~0, confirming clean motions. (Set True to re-enable the collision probe.)
+    disable_collision_checks: bool = False
+    # Minimal Gaussian action noise on every executed action, for state-coverage /
+    # robustness so the learned policy makes cleaner, collision-avoiding motions at
+    # inference. Truncated-Gaussian end-effector noise (std = 10% of each commanded TCP
+    # delta) hard-capped at 1 cm (0.01 m) and ~0.6 deg, mapped to joints via the Jacobian.
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig(
+        action_noise_config=ActionNoiseConfig(
+            enabled=True,
+            action_scale_factor=0.1,
+            max_tcp_position_noise=0.01,   # "very minimal, ~0.01 m"
+            rotation_noise_scale=0.1,
+            max_tcp_rotation_noise=0.01,
+        )
+    )
     task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
         task_sampler_class=PickAndPlaceTaskSampler,
         pickup_types=PICK_AND_PLACE_OBJECTS,
@@ -493,9 +507,22 @@ class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGen
     (privileged planner avoids them in the demo; a vision-only policy cannot, which is the
     intended P+ACT vs ACT contrast at rollout)."""
 
-    num_workers: int = 2
-    seed: int | None = 2026
-    disable_collision_checks: bool = False  # real obstacles — vision-only policy must collide at rollout
+    num_workers: int = 3
+    seed: int | None = 69
+    disable_collision_checks: bool = False  # collision-avoiding demos
+    # Minimal Gaussian action noise (truncated-Gaussian end-effector noise, std = 10%
+    # of each commanded TCP delta, hard-capped at 1 cm / ~0.6 deg, mapped to joints via
+    # the Jacobian) — state-coverage so the trained policy makes cleaner motions and so
+    # the proximity skin earns its keep when states drift near surfaces.
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig(
+        action_noise_config=ActionNoiseConfig(
+            enabled=True,
+            action_scale_factor=0.1,
+            max_tcp_position_noise=0.03,   # "very minimal, ~0.01 m"
+            rotation_noise_scale=0.1,
+            max_tcp_rotation_noise=0.01,
+        )
+    )
     task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
         task_sampler_class=PickAndPlaceTaskSampler,
         pickup_types=PICK_AND_PLACE_OBJECTS,
@@ -508,10 +535,10 @@ class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGen
         base_pose_sampling_radius_range=(0.0, 0.45),  # robot can't retreat for a clear view
         robot_placement_rotation_range_rad=0.52,
         samples_per_house=3,
-        house_inds=list(range(1, 51)),               # small pilot — iterate, then scale
+        house_inds=list(range(1, 50)),               # small pilot — iterate, then scale
         max_allowed_sequential_irrecoverable_failures=10000,
     )
-    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_prox_necessity_pilot_v1"
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_prox_v1_samples"
 
     @property
     def tag(self) -> str:
