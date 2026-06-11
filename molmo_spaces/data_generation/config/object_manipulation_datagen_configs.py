@@ -36,6 +36,7 @@ from molmo_spaces.configs.policy_configs import (
     PickPlannerPolicyConfig,
 )
 from molmo_spaces.configs.robot_configs import (
+    ActionNoiseConfig,
     FloatingRUMRobotConfig,
     FrankaRobotConfig,
     FrankaSkinRobotConfig,
@@ -59,6 +60,7 @@ from molmo_spaces.tasks.opening_task_samplers import OpenTaskSampler
 from molmo_spaces.tasks.pick_and_place_color_task_sampler import PickAndPlaceColorTaskSampler
 from molmo_spaces.tasks.pick_and_place_next_to_task_sampler import PickAndPlaceNextToTaskSampler
 from molmo_spaces.tasks.pick_and_place_task_sampler import (
+    PickAndPlaceFixedTaskSampler,
     PickAndPlaceMultiTaskSampler,
     PickAndPlaceResampleCandidatesTaskSampler,
     PickAndPlaceTaskSampler,
@@ -272,15 +274,46 @@ class FrankaSkinPickAndPlacePilotConfig(FrankaSkinPickAndPlaceDataGenConfig):
         return "franka_skin_pick_and_place_pilot"
 
 
-@register_config("FrankaSkinProxNecessityPilotConfig")
-class FrankaSkinProxNecessityPilotConfig(FrankaSkinPickAndPlacePilotConfig):
-    """Dedicated pilot config for proximity necessity analysis with exactly 15 successes."""
-    filter_for_successful_trajectories: bool = True
-    output_dir: Path = ASSETS_DIR / "datagen" / "franka_skin_prox_necessity_pilot_v1"
+@register_config("PACT")
+class PACT(FrankaSkinPickAndPlacePilotConfig):
+    seed: int | None = np.random.randint(1000)
+    num_workers: int = 1
+    # Regular (collision-avoiding) data collection: keep the standard placement
+    # collision rejection so demos spawn and move clean. The per-step collision
+    # metric (obs_scene["collision_metrics"]) is still recorded — it should now read
+    # ~0, confirming clean motions. (Set True to re-enable the collision probe.)
+    disable_collision_checks: bool = False
+    # Minimal Gaussian action noise on every executed action, for state-coverage /
+    # robustness so the learned policy makes cleaner, collision-avoiding motions at
+    # inference. Truncated-Gaussian end-effector noise (std = 10% of each commanded TCP
+    # delta) hard-capped at 1 cm (0.01 m) and ~0.6 deg, mapped to joints via the Jacobian.
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig(
+        action_noise_config=ActionNoiseConfig(
+            enabled=True,
+            action_scale_factor=0.1,
+            max_tcp_position_noise=0.01,   # "very minimal, ~0.01 m"
+            rotation_noise_scale=0.1,
+            max_tcp_rotation_noise=0.01,
+        )
+    )
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=1,
+        house_inds=list(range(11, 21)),  #
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        #randomize_textures=True,
+        randomize_lighting=True,
+        #randomize_textures_all = True,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "house_7_test" / str(seed)
 
     @property
     def tag(self) -> str:
-        return "franka_skin_prox_necessity_pilot"
+        return "franka_skin_pick_and_place_pilot_medium"
 
 
 @register_config("FrankaSkinPickAndPlacePilotMediumConfig")
@@ -397,6 +430,28 @@ class FrankaSkinPickAndPlaceOneHouseMugConfig(FrankaSkinPickAndPlacePilotConfig)
     @property
     def tag(self) -> str:
         return "franka_skin_one_house_mug"
+
+
+@register_config("FrankaSkinPickAndPlaceOneHouseMugFixedConfig")
+class FrankaSkinPickAndPlaceOneHouseMugFixedConfig(FrankaSkinPickAndPlaceDataGenConfig):
+    """Single-house, single-skill mug collection using a fixed task identity."""
+
+    seed: int | None = 2026
+    num_workers: int = 1
+    filter_for_successful_trajectories: bool = True
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceFixedTaskSampler,
+        pickup_types=["mug"],
+        samples_per_house=250,
+        house_inds=[1],
+        episodes_per_receptacle=0,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_one_house_mug_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pick_and_place_one_house_mug"
 
 
 @register_config("FrankaSkinPickAndPlaceOneHouseMugFastConfig")
@@ -646,6 +701,98 @@ class FrankaSkinLowSurfacePickAndPlacePilotConfig(FrankaSkinLowSurfacePickAndPla
     @property
     def tag(self) -> str:
         return "franka_skin_pick_and_place_low_surface_pilot"
+
+
+@register_config("PACT_LowSurface")
+class PACT_LowSurface(FrankaSkinLowSurfacePickAndPlaceDataGenConfig):
+    """PACT experiment on low/enclosed source surfaces. The proximity skin
+    is actually exercised here because the arm has to approach beds, shelves,
+    sinks, etc. from the side or from within a confined volume."""
+    seed: int | None = 2026
+    num_workers: int = 1
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        samples_per_house=2,
+        house_inds=[0],   # 5 houses, not 1
+        max_allowed_sequential_irrecoverable_failures=10000,
+        source_surface_types=LOW_SURFACE_PREFIXES,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pact_low_surface" / str(seed)
+
+    @property
+    def tag(self) -> str:
+        return "pact_low_surface"
+
+
+@register_config("FrankaSkinProxNecessitySimplePilotConfig")
+class FrankaSkinProxNecessitySimplePilotConfig(FrankaSkinPickAndPlacePilotConfig):
+    """Legacy proximity-necessity pilot with the original pilot defaults."""
+
+    filter_for_successful_trajectories: bool = True
+    output_dir: Path = ASSETS_DIR / "datagen" / "franka_skin_prox_necessity_pilot_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_prox_necessity_pilot"
+
+
+@register_config("FrankaSkinProxNecessityPilotConfig")
+class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGenConfig):
+    """Pilot for the proximity-NECESSITY regime — the setting where vision fails and
+    the skin must carry the trajectory (CoRL thesis).
+
+    Three levers, all relative to PACT:
+      1. ``check_robot_placement_visibility=False`` — drop the guarantee that the exo
+         camera can see the target before placing the robot. PACT keeps this True, which
+         is *why* its vision-blind fraction is 0% (measured: scripts/proximity_necessity.py).
+      2. ``source_surface_types=LOW_SURFACE_PREFIXES`` — enclosed/recessed targets (sink
+         basin, shelf interior, under furniture) where even the wrist cam loses the object.
+      3. heavy clutter packed close + small robot stand-off so the arm cannot back off for
+         a clear view and must operate among surfaces (skin active) most of the trajectory.
+
+    This OVER-GENERATES candidates; it does not hand-design scenes. Curate with
+    ``scripts/proximity_necessity.py`` and KEEP trajectories with
+    ``prox_active_frac >= 0.8`` and high ``vision_blind_frac``. Collisions are left ON
+    (privileged planner avoids them in the demo; a vision-only policy cannot, which is the
+    intended P+ACT vs ACT contrast at rollout)."""
+
+    num_workers: int = 3
+    seed: int | None = 69
+    disable_collision_checks: bool = False  # collision-avoiding demos
+    # Minimal Gaussian action noise (truncated-Gaussian end-effector noise, std = 10%
+    # of each commanded TCP delta, hard-capped at 1 cm / ~0.6 deg, mapped to joints via
+    # the Jacobian) — state-coverage so the trained policy makes cleaner motions and so
+    # the proximity skin earns its keep when states drift near surfaces.
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig(
+        action_noise_config=ActionNoiseConfig(
+            enabled=True,
+            action_scale_factor=0.1,
+            max_tcp_position_noise=0.03,   # "very minimal, ~0.01 m"
+            rotation_noise_scale=0.1,
+            max_tcp_rotation_noise=0.01,
+        )
+    )
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        source_surface_types=LOW_SURFACE_PREFIXES,   # enclosed / recessed targets
+        check_robot_placement_visibility=False,      # KEY: no "camera must see target" guarantee
+        num_added_pickups=60,                        # heavy occluding clutter (PACT: 30)
+        min_reference_to_added_pickup_dist=0.05,     # pack clutter right around the target
+        max_reference_to_added_pickup_dist=0.30,
+        max_robot_to_added_pickup_dist=0.5,
+        base_pose_sampling_radius_range=(0.0, 0.45),  # robot can't retreat for a clear view
+        robot_placement_rotation_range_rad=0.52,
+        samples_per_house=3,
+        house_inds=list(range(1, 50)),               # small pilot — iterate, then scale
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_prox_v1_samples"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_prox_necessity_pilot"
 
 
 DEEP_CAVITY_PREFIXES: tuple[str, ...] = (
