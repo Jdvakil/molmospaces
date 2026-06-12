@@ -798,6 +798,7 @@ class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGen
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 DEEP_CAVITY_PREFIXES: tuple[str, ...] = (
     "cabinet",
     "drawer",
@@ -1078,6 +1079,8 @@ class FrankaSkinPACTMeaningfulReachPickAndPlacePilotConfig(
     def tag(self) -> str:
         return "franka_skin_pact_meaningful_reach_pilot"
 =======
+=======
+>>>>>>> 76f15d6 (fumehood stuff)
 @register_config("FrankaSkinProxVizSampleConfig")
 class FrankaSkinProxVizSampleConfig(FrankaSkinProxNecessityPilotConfig):
     """Small sample collection for VISUALIZING what the proximity skin sees.
@@ -1200,6 +1203,9 @@ class FrankaSkinProxOvernightConfig(FrankaSkinProxNecessityPilotConfig):
     # )
     # output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_pilot_smoke_v1"
 
+<<<<<<< HEAD
+>>>>>>> 76f15d6 (fumehood stuff)
+=======
 >>>>>>> 76f15d6 (fumehood stuff)
 
 @register_config("FrankaOpenDataGenConfig")
