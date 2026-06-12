@@ -1,0 +1,34 @@
+<mujoco model="cabinet_cavity">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="5000" nconmax="5000"/>
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+    <map znear="0.001"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.6 0.6 0.6"/>
+  </visual>
+  <default>
+    <default class="cavity_struct">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="800" rgba="0.55 0.38 0.22 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0.5 0.5 3" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.3 0.3 0.34 1"/>
+    <!-- Cabinet/drawer cavity. Body 'cabinet' centered at (0.5,0,0.8); interior half-extents
+         (0.26,0.24,0.22). Open on the -x face (toward the robot at the origin) and open on top,
+         so both front and top-down grasps are feasible while the bottom + back + 2 side walls
+         flank the arm and keep the proximity skin encapsulated. -->
+    <body name="cabinet" pos="0.5 0 0.8">
+      <geom name="cab_bottom" class="cavity_struct" type="box" pos="0 0 -0.24" size="0.30 0.28 0.02"/>
+      <geom name="cab_back"   class="cavity_struct" type="box" pos="0.28 0 0"   size="0.02 0.28 0.22"/>
+      <geom name="cab_left"   class="cavity_struct" type="box" pos="0 0.26 0"    size="0.30 0.02 0.22"/>
+      <geom name="cab_right"  class="cavity_struct" type="box" pos="0 -0.26 0"   size="0.30 0.02 0.22"/>
+      <!-- low front lip so objects don't roll out the open front; arm reaches in above it -->
+      <geom name="cab_front"  class="cavity_struct" type="box" pos="-0.28 0 -0.18" size="0.02 0.28 0.04"/>
+    </body>
+  </worldbody>
+</mujoco>

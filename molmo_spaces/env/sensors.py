@@ -13,6 +13,8 @@ from molmo_spaces.env.sensors_cameras import (
     CameraSensor,
     DepthSensor,
     ProximityDepthBufferSensor,
+    ProximityVizDepthSensor,
+    ProximityVizRGBSensor,
 )
 from molmo_spaces.robots.abstract import Robot
 from molmo_spaces.tasks.task import BaseMujocoTask
@@ -1143,6 +1145,29 @@ def get_core_sensors(exp_config):
                     uuid=camera_name,
                 )
             )
+            # Optional high-res visualization of this proximity sensor: a scene RGB and a
+            # turbo-colormapped depth, both saved as viewable RGB videos
+            # ({name}_viz_rgb.mp4 + {name}_viz_depth_turbo.mp4) alongside the unchanged 8x8
+            # proximity depth. Names must NOT end in "_depth" (that routes to the lossless
+            # depth-video path). Heavy -- gated behind viz_sensor_rgb.
+            if getattr(exp_config, "viz_sensor_rgb", False):
+                viz_res = getattr(exp_config, "viz_sensor_resolution", (640, 480))
+                viz_depth_range = getattr(exp_config, "viz_depth_range", (0.05, 4.0))
+                sensors.append(
+                    ProximityVizRGBSensor(
+                        camera_name=camera_name,
+                        img_resolution=viz_res,
+                        uuid=f"{camera_name}_viz_rgb",
+                    )
+                )
+                sensors.append(
+                    ProximityVizDepthSensor(
+                        camera_name=camera_name,
+                        img_resolution=viz_res,
+                        uuid=f"{camera_name}_viz_depth_turbo",
+                        depth_range=viz_depth_range,
+                    )
+                )
             continue
 
         # RGB sensor

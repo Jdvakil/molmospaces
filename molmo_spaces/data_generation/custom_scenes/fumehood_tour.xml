@@ -1,0 +1,51 @@
+<mujoco model="fumehood_tour">
+  <size njmax="6000" nconmax="6000"/>
+  <asset>
+    <texture name="floortex" type="2d" builtin="checker" rgb1="0.46 0.46 0.48" rgb2="0.40 0.40 0.42" width="300" height="300"/>
+    <material name="floormat" texture="floortex" texrepeat="10 10" reflectance="0.05"/>
+    <material name="bench" rgba="0.62 0.55 0.45 1"/>
+  </asset>
+  <default>
+    <default class="hood">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="700" rgba="0.92 0.93 0.94 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light name="l_key" pos="0.4 0.5 2.6" dir="0 0 -1" diffuse="0.95 0.95 0.95"/>
+    <light name="l_fill" pos="-0.6 -0.7 2.1" dir="0.3 0.3 -1" diffuse="0.5 0.5 0.5"/>
+    <light name="l_hood" pos="0.75 0 1.45" dir="0 0 -1" diffuse="0.6 0.6 0.6"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" material="floormat" contype="8" conaffinity="15"/>
+    <!-- MCAP-TOUR geometry: bench top z=0.585, hood mouth at x=0.35, robot on the floor.
+         Static shell is tall/deep enough for every variant; aperture set per-episode by the
+         mocap sash + jambs (same names/conventions as fumehood.xml). NO glass anywhere. -->
+    <geom name="bench_top" class="hood" type="box" pos="0.825 0 0.5775" size="0.50 0.60 0.0075" material="bench"/>
+    <geom name="bench_body" class="hood" type="box" pos="0.825 0 0.285" size="0.47 0.57 0.285" rgba="0.80 0.81 0.83 1"/>
+    <geom name="hood_side_l" class="hood" type="box" pos="0.825 0.45 1.0" size="0.475 0.012 0.42" rgba="0.90 0.91 0.92 1"/>
+    <geom name="hood_side_r" class="hood" type="box" pos="0.825 -0.45 1.0" size="0.475 0.012 0.42" rgba="0.90 0.91 0.92 1"/>
+    <geom name="hood_back"  class="hood" type="box" pos="1.30 0 1.0" size="0.012 0.46 0.42" rgba="0.88 0.89 0.90 1"/>
+    <geom name="hood_top"   class="hood" type="box" pos="0.825 0 1.42" size="0.475 0.46 0.015"/>
+    <geom name="hood_frame_l" class="hood" type="box" pos="0.35 0.45 1.0" size="0.02 0.02 0.42"/>
+    <geom name="hood_frame_r" class="hood" type="box" pos="0.35 -0.45 1.0" size="0.02 0.02 0.42"/>
+    <!-- SASH RAIL (opaque): bottom edge = opening height -->
+    <body name="sash" mocap="true" pos="0.35 0 1.10">
+      <geom name="sash_g" class="hood" type="box" size="0.015 0.44 0.025" rgba="0.62 0.64 0.66 1"/>
+    </body>
+    <body name="jamb_l" mocap="true" pos="0.35 0.35 0.80">
+      <geom name="jamb_l_g" class="hood" type="box" size="0.012 0.18 0.20" rgba="0.88 0.89 0.90 1"/>
+    </body>
+    <body name="jamb_r" mocap="true" pos="0.35 -0.35 0.80">
+      <geom name="jamb_r_g" class="hood" type="box" size="0.012 0.18 0.20" rgba="0.88 0.89 0.90 1"/>
+    </body>
+    <!-- interior obstacle bars (posed per episode) -->
+    <body name="protr_s" mocap="true" pos="0 0.8 -2.0">
+      <geom name="protr_s_g" class="hood" type="box" size="0.0175 0.0175 0.10" rgba="0.48 0.34 0.22 1"/>
+    </body>
+    <body name="protr_m" mocap="true" pos="0 1.2 -2.0">
+      <geom name="protr_m_g" class="hood" type="box" size="0.025 0.025 0.11" rgba="0.48 0.34 0.22 1"/>
+    </body>
+    <body name="protr_l" mocap="true" pos="0 1.6 -2.0">
+      <geom name="protr_l_g" class="hood" type="box" size="0.035 0.035 0.12" rgba="0.48 0.34 0.22 1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,69 @@
+<mujoco model="enclosure_param">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="6000" nconmax="6000"/>
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+    <map znear="0.001"/>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.65 0.65 0.65"/>
+  </visual>
+  <asset>
+    <texture name="woodtex" type="2d" builtin="flat" rgb1="0.52 0.38 0.25" width="32" height="32"/>
+    <material name="wood" texture="woodtex" reflectance="0.05"/>
+    <texture name="floortex" type="2d" builtin="checker" rgb1="0.45 0.43 0.40" rgb2="0.38 0.36 0.34" width="300" height="300"/>
+    <material name="floormat" texture="floortex" texrepeat="10 10" reflectance="0.05"/>
+  </asset>
+  <default>
+    <default class="slab">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="700" material="wood"/>
+    </default>
+  </default>
+  <worldbody>
+    <light name="l_key"  pos="0.4 0.5 2.5" dir="0 0 -1" diffuse="0.95 0.95 0.95"/>
+    <light name="l_fill" pos="-0.6 -0.7 2.1" dir="0.3 0.3 -1" diffuse="0.5 0.5 0.5"/>
+    <light name="l_front" pos="-0.4 0 1.4" dir="0.7 0 -0.4" diffuse="0.45 0.45 0.45"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" material="floormat" contype="8" conaffinity="15"/>
+    <!-- Parameterized shelf-cubby enclosure. STATIC: shelf board (cubby floor, top z=0.50) on a
+         stand. MOCAP slabs (re-posed per episode by EnclosureReachSampler): left/right/top walls
+         (aperture = gaps between them), back wall (depth), and 3 protrusion bars of different
+         cross-sections (continuous intrusion via position; unused ones parked below the floor). -->
+    <geom name="shelf_board" class="slab" type="box" pos="1.08 0 0.70" size="0.50 0.45 0.02"/>
+    <geom name="stand_leg1" class="slab" type="box" pos="0.66 0.41 0.34" size="0.03 0.03 0.34"/>
+    <geom name="stand_leg2" class="slab" type="box" pos="0.66 -0.41 0.34" size="0.03 0.03 0.34"/>
+    <geom name="stand_leg3" class="slab" type="box" pos="1.50 0.41 0.34" size="0.03 0.03 0.34"/>
+    <geom name="stand_leg4" class="slab" type="box" pos="1.50 -0.41 0.34" size="0.03 0.03 0.34"/>
+    <body name="encl_left" mocap="true" pos="0.82 0.30 0.85">
+      <geom name="encl_left_g" class="slab" type="box" size="0.50 0.02 0.35"/>
+    </body>
+    <body name="encl_right" mocap="true" pos="0.82 -0.30 0.85">
+      <geom name="encl_right_g" class="slab" type="box" size="0.50 0.02 0.35"/>
+    </body>
+    <body name="encl_top" mocap="true" pos="0.82 0 0.72">
+      <geom name="encl_top_g" class="slab" type="box" size="0.50 0.45 0.02"/>
+    </body>
+    <body name="encl_back" mocap="true" pos="0.80 0 0.85">
+      <geom name="encl_back_g" class="slab" type="box" size="0.02 0.45 0.35"/>
+    </body>
+    <body name="protr_s" mocap="true" pos="0 0.8 -2.0">
+      <geom name="protr_s_g" class="slab" type="box" size="0.0175 0.10 0.0175" rgba="0.48 0.34 0.22 1"/>
+    </body>
+    <body name="protr_m" mocap="true" pos="0 1.2 -2.0">
+      <geom name="protr_m_g" class="slab" type="box" size="0.025 0.10 0.025" rgba="0.48 0.34 0.22 1"/>
+    </body>
+    <body name="protr_l" mocap="true" pos="0 1.6 -2.0">
+      <geom name="protr_l_g" class="slab" type="box" size="0.035 0.10 0.035" rgba="0.48 0.34 0.22 1"/>
+    </body>
+    <body name="front_top" mocap="true" pos="0 2.0 -2.0">
+      <geom name="front_top_g" class="slab" type="box" size="0.015 0.45 0.30"/>
+    </body>
+    <body name="front_left" mocap="true" pos="0 2.4 -2.0">
+      <geom name="front_left_g" class="slab" type="box" size="0.015 0.18 0.35"/>
+    </body>
+    <body name="front_right" mocap="true" pos="0 2.8 -2.0">
+      <geom name="front_right_g" class="slab" type="box" size="0.015 0.18 0.35"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -49,6 +49,23 @@ class MlSpacesExpConfig(Config, ABC):
     ctrl_dt_ms: float  # Default control time step
     sim_dt_ms: float  # Default simulation time step
     proximity_sensor_period_ms: float = 16.6667  # 60 Hz; sub-step recording for is_proximity_sensor cameras (set 0 to record at policy rate only)
+    # When True, ALSO render a high-resolution RGB + depth visualization from every
+    # is_proximity_sensor camera (same MJCF camera / fovy as the native 8x8 SPAD render --
+    # only the pixel count changes) and save them as videos. The normal 8x8 proximity depth
+    # is still recorded unchanged. Heavy (one RGB + one depth video per proximity sensor);
+    # intended for small visualization/debug runs, NOT full-scale data collection.
+    viz_sensor_rgb: bool = False
+    # (width, height) of the proximity-sensor RGB/depth visualization render. Default 640x480
+    # (standard VGA -> arrays of shape (480, 640)). The vertical FOV equals the sensor fovy
+    # (45 deg, focal length unchanged); because the SPAD is square, a non-square resolution
+    # widens/narrows the horizontal FOV relative to the native 8x8 sensor -- set width==height
+    # (e.g. (480, 480)) for a FOV that exactly matches the 8x8 SPAD. Only used when viz_sensor_rgb.
+    viz_sensor_resolution: tuple[int, int] = (640, 480)
+    # (near, far) metric-depth clip range, in meters, for the turbo-colormapped depth viz.
+    # Depth is clipped to this range before coloring so colors are consistent across frames
+    # and sensors: near surfaces -> warm (red) end, far/empty -> cool (blue) end. Defaults to
+    # the SPAD valid range. Only used when viz_sensor_rgb is True.
+    viz_depth_range: tuple[float, float] = (0.05, 4.0)
     seed: int | None = None  # Random seed for task sampling (if None, generates random seed)
     task_horizon: int | None = None  # Maximum number of steps per episode (if None, no time limit)
     end_on_success: bool = (
@@ -177,7 +194,9 @@ class MlSpacesExpConfig(Config, ABC):
                     reference_body_names=list(cam.reference_body_names),
                     camera_offset=list(cam.camera_offset),
                     lookat_offset=list(cam.lookat_offset),
-                    camera_quaternion=list(cam.camera_quaternion),
+                    # lookat-aimed cameras have no explicit quaternion (None)
+                    camera_quaternion=(list(cam.camera_quaternion)
+                                       if cam.camera_quaternion is not None else None),
                     fov=cam.fov,
                 )
                 sc.camera_config.cameras[i] = new_camera

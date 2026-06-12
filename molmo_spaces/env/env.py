@@ -177,6 +177,16 @@ class CPUMujocoEnv(BaseMujocoEnv):
         # is at 624x352 (non-square) which would give the wrong HFOV.
         self._proximity_renderer: mujoco.Renderer | None = None
         self._proximity_camera_resolution: tuple[int, int] = (8, 8)  # (height, width)
+        # Shared scene option for proximity rendering: hides the cosmetic skin (geom
+        # group 2) so sensors embedded inside the skin volume see the environment, not
+        # their own skin. Created lazily; used by both the 8x8 and the viz renderers.
+        self._proximity_scene_option: mujoco.MjvOption | None = None
+
+        # Optional high-res RGB+depth visualization of proximity sensors (config.viz_sensor_rgb).
+        # Dedicated renderer at config.viz_sensor_resolution. Frames are cached per policy step
+        # (keyed by camera name) so the RGB and depth viz sensors for one camera share a render.
+        self._proximity_viz_renderer: mujoco.Renderer | None = None
+        self._proximity_viz_frames: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
         self.object_managers = []
 
@@ -195,6 +205,10 @@ class CPUMujocoEnv(BaseMujocoEnv):
         if self._proximity_renderer is not None:
             self._proximity_renderer.close()
             self._proximity_renderer = None
+        if getattr(self, "_proximity_viz_renderer", None) is not None:
+            self._proximity_viz_renderer.close()
+            self._proximity_viz_renderer = None
+        self._proximity_viz_frames = {}
 
         # Invalidate cached thormap when scene changes
         self._cached_thormap = None
@@ -331,6 +345,20 @@ class CPUMujocoEnv(BaseMujocoEnv):
         """Clear proximity-depth buffers ahead of a fresh policy step."""
         self._proximity_depth_frames = {name: [] for name in camera_names}
 
+    def reset_proximity_viz_cache(self) -> None:
+        """Drop the per-step proximity-viz render cache (call once per policy step)."""
+        self._proximity_viz_frames = {}
+
+    def _get_proximity_scene_option(self) -> "mujoco.MjvOption":
+        """Scene option for proximity rendering: hides the cosmetic skin (geom group 2)
+        so the embedded sensors see the environment, not their own skin. Memoized."""
+        if self._proximity_scene_option is None:
+            opt = mujoco.MjvOption()
+            mujoco.mjv_defaultOption(opt)
+            opt.geomgroup[2] = 0  # hide skin (group=2)
+            self._proximity_scene_option = opt
+        return self._proximity_scene_option
+
     def _proximity_cam_full_name(self, registry_name: str) -> str | None:
         """Look up the MJCF camera name for a proximity sensor (e.g. 'robot_0/link2_sensor_0')."""
         cfg = getattr(self.config, "camera_config", None)
@@ -359,9 +387,7 @@ class CPUMujocoEnv(BaseMujocoEnv):
             h, w = self._proximity_camera_resolution
             self._proximity_renderer = mujoco.Renderer(self.mj_model, height=h, width=w)
             self._proximity_renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SKYBOX] = 0
-            self._proximity_scene_option = mujoco.MjvOption()
-            mujoco.mjv_defaultOption(self._proximity_scene_option)
-            self._proximity_scene_option.geomgroup[2] = 0  # hide skin (group=2)
+        scene_option = self._get_proximity_scene_option()
         self._proximity_renderer.enable_depth_rendering()
         for name in camera_names:
             if name not in self.camera_manager.registry:
@@ -373,13 +399,60 @@ class CPUMujocoEnv(BaseMujocoEnv):
                 self._proximity_renderer.update_scene(
                     self.current_data,
                     camera=full,
-                    scene_option=self._proximity_scene_option,
+                    scene_option=scene_option,
                 )
                 depth = self._proximity_renderer.render().astype(np.float32, copy=True)
             except Exception as e:
                 log.warning(f"native 8x8 render failed for {full}: {e}")
                 continue
             self._proximity_depth_frames.setdefault(name, []).append(depth)
+
+    def render_proximity_viz(self, camera_name: str) -> tuple[np.ndarray, np.ndarray]:
+        """Render a high-res (RGB, depth) view from a proximity sensor for visualization.
+
+        Uses the SAME MJCF camera as the native 8x8 SPAD render (identical pose and
+        fovy/focal length) but at config.viz_sensor_resolution, with the cosmetic skin
+        (geom group 2) hidden. RGB and depth come from a single scene update so they are
+        perfectly registered. Result is cached per policy step (cleared by
+        reset_proximity_viz_cache) so the RGB and depth viz sensors share one render.
+
+        Returns:
+            (rgb, depth): rgb is (H, W, 3) uint8, depth is (H, W) float32 meters. Returns
+            zeros if the camera is unknown or the render fails.
+        """
+        cached = self._proximity_viz_frames.get(camera_name)
+        if cached is not None:
+            return cached
+
+        res = getattr(self.config, "viz_sensor_resolution", (640, 480))
+        w, h = int(res[0]), int(res[1])  # config convention is (width, height)
+        rgb = np.zeros((h, w, 3), dtype=np.uint8)
+        depth = np.zeros((h, w), dtype=np.float32)
+
+        full = self._proximity_cam_full_name(camera_name)
+        if full is not None and camera_name in self.camera_manager.registry:
+            if self._proximity_viz_renderer is None:
+                self._proximity_viz_renderer = mujoco.Renderer(
+                    self.mj_model, height=h, width=w
+                )
+                self._proximity_viz_renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SKYBOX] = 0
+            renderer = self._proximity_viz_renderer
+            scene_option = self._get_proximity_scene_option()
+            try:
+                renderer.disable_depth_rendering()
+                renderer.update_scene(
+                    self.current_data, camera=full, scene_option=scene_option
+                )
+                rgb = renderer.render().astype(np.uint8, copy=True)
+                # Same scene, just switch the read-out to depth (no re-update needed).
+                renderer.enable_depth_rendering()
+                depth = renderer.render().astype(np.float32, copy=True)
+                renderer.disable_depth_rendering()
+            except Exception as e:
+                log.warning(f"proximity viz render failed for {full}: {e}")
+
+        self._proximity_viz_frames[camera_name] = (rgb, depth)
+        return rgb, depth
 
     def render_segmentation_frame(self, camera_name: str) -> np.ndarray:
         """Renders a segmentation frame from the perspective of the specified camera."""

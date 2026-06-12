@@ -1,0 +1,39 @@
+<mujoco model="real_env_1_kitchen">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="8000" nconmax="8000"/>
+  <visual><global offwidth="1280" offheight="720"/><map znear="0.001"/>
+    <headlight ambient="0.42 0.42 0.42" diffuse="0.55 0.55 0.55"/></visual>
+  <asset>
+    <texture name="woodtex" type="2d" builtin="flat" rgb1="0.62 0.60 0.58" width="32" height="32"/>
+    <material name="wood" texture="woodtex" reflectance="0.05"/>
+    <texture name="wood2tex" type="2d" builtin="flat" rgb1="0.40 0.36 0.33" width="32" height="32"/>
+    <material name="wood2" texture="wood2tex" reflectance="0.05"/>
+    <texture name="floortex" type="2d" builtin="checker" rgb1="0.50 0.48 0.45" rgb2="0.43 0.41 0.38" width="300" height="300"/>
+    <material name="floormat" texture="floortex" texrepeat="10 10" reflectance="0.05"/>
+  </asset>
+  <default>
+    <default class="furniture">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="700" material="wood"/>
+    </default>
+    <default class="furniture2">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="700" material="wood2"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0.3 0.5 2.6" dir="0 0 -1" diffuse="0.65 0.65 0.65"/>
+    <light pos="-0.8 -0.8 2.2" dir="0.3 0.3 -1" diffuse="0.3 0.3 0.3"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" material="floormat" contype="8" conaffinity="15"/>
+    <geom name="counter_top" type="box" pos="0.62 0 0.45" size="0.42 0.65 0.03" class="furniture"/>
+    <geom name="counter_body" type="box" pos="0.66 0 0.21" size="0.36 0.62 0.21" class="furniture"/>
+    <geom name="backsplash" type="box" pos="1.07 0 1.0" size="0.03 0.85 1.0" contype="8" conaffinity="15" rgba="0.82 0.80 0.74 1"/>
+    <geom name="upper_cab" type="box" pos="0.95 0 1.45" size="0.16 0.62 0.25" class="furniture2"/>
+    <geom name="upper_cab_bottom" type="box" pos="0.95 0 1.19" size="0.16 0.62 0.015" class="furniture2"/>
+    <geom name="side_counter" type="box" pos="0.1 0.85 0.4" size="0.45 0.22 0.03" class="furniture"/>
+    <site name="target_spot" pos="0.5 0.0 0.48" size="0.01" rgba="0 0 0 0"/>
+  </worldbody>
+</mujoco>

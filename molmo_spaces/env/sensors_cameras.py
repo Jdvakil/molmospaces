@@ -123,16 +123,101 @@ class ProximityDepthBufferSensor(Sensor):
 
     def get_observation(self, env, task, batch_index: int = 0, *args, **kwargs) -> np.ndarray:
         frames = getattr(env, "_proximity_depth_frames", {}).get(self.camera_name, [])
+        if not frames and hasattr(env, "record_proximity_depths"):
+            # Post-reset call: no sim sub-step has run yet so the buffer is empty.
+            # Render once now so the first observation is real depth — an all-zero
+            # frame reads downstream as "contact at 0 m", which is worse than stale.
+            env.record_proximity_depths([self.camera_name])
+            frames = getattr(env, "_proximity_depth_frames", {}).get(self.camera_name, [])
         out_w, out_h = self.img_resolution
         out = np.zeros((self.max_substeps, out_h, out_w), dtype=np.float32)
         if not frames:
             return out
         downsampled = [self._downsample(f) for f in frames[: self.max_substeps]]
-        # Right-align: latest frames in the trailing slots, leading slots zero-padded.
-        # For the post-reset call buffer is empty (handled above); for normal steps we
-        # expect exactly max_substeps frames so this is just np.stack.
-        out[-len(downsampled) :] = np.stack(downsampled, axis=0)
+        # Left-pad by repeating the earliest frame (never zeros: a zero substep reads
+        # as a 0 m return). Normal steps deliver exactly max_substeps frames, so the
+        # padding only triggers on the post-reset observation.
+        while len(downsampled) < self.max_substeps:
+            downsampled.insert(0, downsampled[0])
+        out[:] = np.stack(downsampled, axis=0)
         return out
+
+
+_TURBO_LUT: np.ndarray | None = None
+
+
+def _get_turbo_lut() -> np.ndarray:
+    """256x3 uint8 RGB lookup table for the 'turbo' colormap (built once, cached)."""
+    global _TURBO_LUT
+    if _TURBO_LUT is None:
+        ramp = np.arange(256, dtype=np.uint8).reshape(256, 1)
+        try:
+            import cv2
+
+            bgr = cv2.applyColorMap(ramp, cv2.COLORMAP_TURBO).reshape(256, 3)
+            _TURBO_LUT = np.ascontiguousarray(bgr[:, ::-1])  # BGR -> RGB
+        except Exception:
+            from matplotlib import cm
+
+            _TURBO_LUT = (cm.turbo(np.linspace(0.0, 1.0, 256))[:, :3] * 255).astype(np.uint8)
+    return _TURBO_LUT
+
+
+def depth_to_turbo_rgb(depth: np.ndarray, near: float, far: float) -> np.ndarray:
+    """Map a metric-depth (H, W) float array to an (H, W, 3) uint8 turbo RGB image.
+
+    Depth is clipped to [near, far] so coloring is stable across frames/sensors; near
+    surfaces map to the warm (red) end of turbo, far/empty pixels to the cool (blue) end.
+    """
+    lut = _get_turbo_lut()
+    d = np.asarray(depth, dtype=np.float32)
+    span = max(float(far) - float(near), 1e-6)
+    norm = np.clip((float(far) - d) / span, 0.0, 1.0)  # near -> 1 (warm), far -> 0 (cool)
+    idx = (norm * 255.0).astype(np.uint8)
+    return lut[idx]
+
+
+class ProximityVizRGBSensor(CameraSensor):
+    """High-res RGB visualization of a proximity (SPAD) sensor's view.
+
+    Only added when exp_config.viz_sensor_rgb is True. Subclasses CameraSensor so the
+    save pipeline treats it exactly like any RGB camera (saved as an mp4, dropped before
+    batching for memory). Unlike CameraSensor it renders through the dedicated
+    proximity-viz renderer (cosmetic skin hidden, same MJCF camera/fovy as the native 8x8
+    SPAD render -- only the resolution differs) rather than the shared global renderer.
+    """
+
+    def get_observation(self, env, task, batch_index: int = 0, *args, **kwargs) -> np.ndarray:
+        rgb, _ = env.render_proximity_viz(self.camera_name)
+        return rgb
+
+
+class ProximityVizDepthSensor(CameraSensor):
+    """High-res TURBO-colormapped depth visualization of a proximity (SPAD) sensor's view.
+
+    Only added when exp_config.viz_sensor_rgb is True. Renders the same view as the native
+    8x8 SPAD (cosmetic skin hidden, same MJCF camera/fovy) at viz_sensor_resolution, then
+    maps the metric depth to a 3-channel turbo RGB image (near = warm, far = cool) so it is
+    directly viewable. Subclasses CameraSensor so the save pipeline writes it as a normal
+    RGB mp4 (NOT a lossless depth-encoded video); its uuid must therefore not end in
+    ``_depth``. Shares the per-step render cache with ProximityVizRGBSensor (one scene
+    render serves both viz sensors).
+    """
+
+    def __init__(
+        self,
+        camera_name: str = "camera",
+        img_resolution: tuple[int, int] = (640, 480),
+        uuid: str | None = None,
+        depth_range: tuple[float, float] = (0.05, 4.0),
+    ) -> None:
+        super().__init__(camera_name=camera_name, img_resolution=img_resolution, uuid=uuid)
+        self.depth_range = depth_range
+
+    def get_observation(self, env, task, batch_index: int = 0, *args, **kwargs) -> np.ndarray:
+        _, depth = env.render_proximity_viz(self.camera_name)
+        near, far = self.depth_range
+        return depth_to_turbo_rgb(depth, near, far)
 
 
 class SegmentationSensor(Sensor):

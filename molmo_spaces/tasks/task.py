@@ -70,6 +70,9 @@ class BaseMujocoTask(ABC):
             if self._n_sim_steps_per_proximity > 0
             else []
         )
+        # High-res proximity RGB/depth viz: its per-step render cache must be cleared
+        # each policy step so the viz sensors re-render against fresh sim state.
+        self._viz_sensor_rgb = getattr(exp_config, "viz_sensor_rgb", False)
         self._task_horizon = (
             exp_config.task_horizon if exp_config.task_horizon is not None else np.inf
         )
@@ -367,6 +370,8 @@ class BaseMujocoTask(ABC):
             self._datagen_profiler.start("physics_step")
         if self._proximity_camera_names:
             self._env.reset_proximity_depth_buffer(self._proximity_camera_names)
+        if self._viz_sensor_rgb:
+            self._env.reset_proximity_viz_cache()
         sim_steps_in_policy = 0
         for _ in range(self._n_ctrl_steps_per_policy):
             for robot in self._env.robots:

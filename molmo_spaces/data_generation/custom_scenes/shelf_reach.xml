@@ -1,0 +1,45 @@
+<mujoco model="shelf_reach">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="5000" nconmax="5000"/>
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+    <map znear="0.001"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.6 0.6 0.6"/>
+  </visual>
+  <default>
+    <!-- Physical floor: the object rests on it (and it's the only obstacle the planner must avoid). -->
+    <default class="cavity_floor">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="800" rgba="0.55 0.40 0.26 1"/>
+    </default>
+    <!-- Ghost walls: VISUAL-ONLY (contype/conaffinity=0). The 29 proximity sensors render depth
+         and SEE these walls (-> all sensors active), but the arm passes through them, so the
+         privileged planner reaches in and completes the pick exactly as in an open scene. -->
+    <default class="cavity_wall">
+      <geom contype="0" conaffinity="0" group="0" rgba="0.55 0.40 0.26 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0.4 0.4 3" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.3 0.3 0.34 1"/>
+    <!-- Deep cupboard the arm reaches INTO. Closed back/top/bottom/left/right + a front-wall frame
+         with an entry hole + a rear panel behind the shoulder. Walls ~0.28 m from the arm so ALL 29
+         SPAD sensors read <0.5 m 100% of the time (scripts/shelf_design.py). Walls are visual-only
+         (ghost) so the arm reaches in unobstructed; only sh_bottom is physical (object rest surface).
+         Object rests at ~(0.60,0,0.46). -->
+    <body name="shelf" pos="0 0 0">
+      <geom name="sh_bottom"      class="cavity_floor" type="box" pos="0.38 0 0.40"   size="0.38 0.32 0.02"/>
+      <geom name="sh_back"        class="cavity_wall"  type="box" pos="0.74 0 0.80"   size="0.02 0.32 0.42"/>
+      <geom name="sh_top"         class="cavity_wall"  type="box" pos="0.38 0 1.20"   size="0.38 0.32 0.02"/>
+      <geom name="sh_left"        class="cavity_wall"  type="box" pos="0.38 0.30 0.80"  size="0.38 0.02 0.42"/>
+      <geom name="sh_right"       class="cavity_wall"  type="box" pos="0.38 -0.30 0.80" size="0.38 0.02 0.42"/>
+      <geom name="sh_front_top"   class="cavity_wall"  type="box" pos="0.02 0 1.03"   size="0.02 0.32 0.15"/>
+      <geom name="sh_front_left"  class="cavity_wall"  type="box" pos="0.02 0.26 0.66"  size="0.02 0.02 0.22"/>
+      <geom name="sh_front_right" class="cavity_wall"  type="box" pos="0.02 -0.26 0.66" size="0.02 0.02 0.22"/>
+      <geom name="sh_rear"        class="cavity_wall"  type="box" pos="-0.18 0 0.87"  size="0.02 0.32 0.31"/>
+    </body>
+  </worldbody>
+</mujoco>

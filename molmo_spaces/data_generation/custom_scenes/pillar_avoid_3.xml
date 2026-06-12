@@ -1,0 +1,15 @@
+<mujoco model="pillar_avoid_3">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="6000" nconmax="6000"/>
+  <visual><global offwidth="1280" offheight="720"/><map znear="0.001"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.6 0.6 0.6"/></visual>
+  <worldbody>
+    <light pos="0.4 0.4 3" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+    <!-- Obstacle-avoidance variant 3: 4 tall PHYSICAL pillars; placements blocking >10%
+         of exo-camera sightlines to the arm excluded (training view preserved). -->
+    <body name="pillars" pos="0 0 0"><geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.30 0.30 0.34 1" contype="8" conaffinity="15"/><geom name="obj_pad" type="box" pos="0.60 0 0.42" size="0.14 0.14 0.02" rgba="0.5 0.45 0.4 1" contype="8" conaffinity="15"/><geom name="pillar_0" type="box" pos="0.306 -0.162 0.558" size="0.053 0.053 0.558" contype="8" conaffinity="15" rgba="0.61 0.43 0.36 1"/><geom name="pillar_3" type="box" pos="-0.399 0.162 0.581" size="0.043 0.043 0.581" contype="8" conaffinity="15" rgba="0.42 0.38 0.36 1"/><geom name="pillar_4" type="box" pos="-0.026 -0.420 0.551" size="0.047 0.047 0.551" contype="8" conaffinity="15" rgba="0.48 0.45 0.53 1"/><geom name="pillar_5" type="box" pos="0.379 -0.098 0.645" size="0.040 0.040 0.645" contype="8" conaffinity="15" rgba="0.40 0.62 0.46 1"/></body>
+  </worldbody>
+</mujoco>

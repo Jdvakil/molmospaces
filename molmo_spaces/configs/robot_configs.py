@@ -166,6 +166,14 @@ class FrankaSkinRobotConfig(FrankaRobotConfig):
     name: str = "franka_skin"
 
 
+class FrankaSkinHybridRobotConfig(FrankaSkinRobotConfig):
+    """Franka FR3 + Robotiq with the gentact HYBRID skin (40 SPAD sensors, links 1-6).
+    Same robot dir; loads model_hybrid.xml (verified sensor aim + near-field znear fix)."""
+
+    name: str = "franka_skin"
+    robot_xml_path: Path = Path("model_hybrid.xml")
+
+
 class FrankaCAPRobotConfig(BaseRobotConfig):
     """Configuration for Franka FR3 robot."""
 

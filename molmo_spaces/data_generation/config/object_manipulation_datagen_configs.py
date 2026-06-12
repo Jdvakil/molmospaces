@@ -27,6 +27,7 @@ from molmo_spaces.configs.camera_configs import (
     FrankaRandomizedD405D455CameraSystem,
     FrankaRandomizedDroidCameraSystem,
     FrankaSkinCameraSystem,
+    FrankaSkinHybridCameraSystem,
     RBY1GoProD455CameraSystem,
 )
 from molmo_spaces.configs.policy_configs import (
@@ -40,6 +41,7 @@ from molmo_spaces.configs.robot_configs import (
     FloatingRUMRobotConfig,
     FrankaRobotConfig,
     FrankaSkinRobotConfig,
+    FrankaSkinHybridRobotConfig,
     RBY1MConfig,
     RBY1MOpenCloseConfig,
 )
@@ -757,7 +759,7 @@ class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGen
     (privileged planner avoids them in the demo; a vision-only policy cannot, which is the
     intended P+ACT vs ACT contrast at rollout)."""
 
-    num_workers: int = 3
+    num_workers: int = 1
     seed: int | None = 69
     disable_collision_checks: bool = False  # collision-avoiding demos
     # Minimal Gaussian action noise (truncated-Gaussian end-effector noise, std = 10%
@@ -784,8 +786,8 @@ class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGen
         max_robot_to_added_pickup_dist=0.5,
         base_pose_sampling_radius_range=(0.0, 0.45),  # robot can't retreat for a clear view
         robot_placement_rotation_range_rad=0.52,
-        samples_per_house=3,
-        house_inds=list(range(1, 50)),               # small pilot — iterate, then scale
+        samples_per_house=25,
+        house_inds=[11],               # small pilot — iterate, then scale
         max_allowed_sequential_irrecoverable_failures=10000,
     )
     output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_prox_v1_samples"
@@ -795,6 +797,7 @@ class FrankaSkinProxNecessityPilotConfig(FrankaSkinLowSurfacePickAndPlaceDataGen
         return "franka_skin_prox_necessity_pilot"
 
 
+<<<<<<< HEAD
 DEEP_CAVITY_PREFIXES: tuple[str, ...] = (
     "cabinet",
     "drawer",
@@ -1074,6 +1077,130 @@ class FrankaSkinPACTMeaningfulReachPickAndPlacePilotConfig(
     @property
     def tag(self) -> str:
         return "franka_skin_pact_meaningful_reach_pilot"
+=======
+@register_config("FrankaSkinProxVizSampleConfig")
+class FrankaSkinProxVizSampleConfig(FrankaSkinProxNecessityPilotConfig):
+    """Small sample collection for VISUALIZING what the proximity skin sees.
+
+    Identical regime to FrankaSkinProxNecessityPilotConfig (same robot, cameras,
+    action noise, clutter), but with ``viz_sensor_rgb=True`` so every one of the 29
+    SPAD sensors ALSO emits two high-res, directly-viewable videos per trajectory --
+    a scene RGB (``episode_XXXX_link{L}_sensor_{S}_viz_rgb.mp4``) and a turbo-colormapped
+    depth (``..._viz_depth_turbo.mp4``, near=warm/red, far=cool/blue) -- alongside the
+    unchanged native 8x8 proximity depth. Kept tiny on purpose (one house, a few samples)
+    because each trajectory writes 29x2 videos. Bump samples_per_house / house_inds once
+    you've eyeballed the output.
+
+    The viz uses the SAME camera/fovy as the 8x8 sensor (vertical FOV = 45 deg, focal
+    length unchanged); only the pixel resolution differs. viz_sensor_resolution defaults
+    to 640x480 -> arrays of shape (480, 640); set width==height for a FOV that exactly
+    matches the square 8x8 SPAD. viz_depth_range sets the turbo near/far clip (meters).
+    """
+    seed: int | None = 2026
+    num_workers: int = 1
+    viz_sensor_rgb: bool = True
+    viz_sensor_resolution: tuple[int, int] = (640, 480)  # (width, height)
+    # turbo near/far clip, meters. Narrowed from the full SPAD range (0.05, 4.0) to (0.05, 1.0)
+    # after a smoke run: the skin's depth median is ~0.53 m (p25=0.24, p75=1.70), so against a
+    # 4 m span nearly everything collapsed into the warm end (uniform red, no contrast). Clipping
+    # at 1.0 m spreads turbo across the manipulation-relevant near field (red<->near, blue=>=1 m).
+    viz_depth_range: tuple[float, float] = (0.05, 1.0)  # turbo near/far clip, meters
+    # SOFTENED relative to FrankaSkinProxNecessityPilotConfig so house 11 actually yields a
+    # usable sample set (the strict necessity knobs -- 60 clutter objects packed at 5 cm and a
+    # 0-0.45 m stand-off -- starved the place-target sampler and IK, giving ~1 trajectory before
+    # the run aborted). Clutter cut 60 -> 20 and dist-to-clutter widened so a receptacle fits;
+    # robot stand-off raised to 0.2-0.65 m so grasp/lift IK is reachable. Still low-surface /
+    # skin-active (proximity sensors fire on approach), just no longer near-zero yield.
+    # CRITICAL FIX: max_allowed_sequential_task_sampler_failures was inheriting its default of 10,
+    # so 10 consecutive (expected) sampling misses aborted the whole house even though the sibling
+    # irrecoverable cap was 10000. Raised to 300 so the over-generating sampler keeps going.
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        source_surface_types=LOW_SURFACE_PREFIXES,
+        check_robot_placement_visibility=False,
+        num_added_pickups=20,
+        min_reference_to_added_pickup_dist=0.10,
+        max_reference_to_added_pickup_dist=0.40,
+        max_robot_to_added_pickup_dist=0.6,
+        base_pose_sampling_radius_range=(0.2, 0.65),
+        robot_placement_rotation_range_rad=0.52,
+        samples_per_house=100,           # early-stop target; ~8% rollout yield on house 11
+        house_inds=[11],
+        # With ~8% rollout yield, runs of 10+ consecutive IK-rollout failures are near-certain;
+        # the default rollout cap (10) would abort the house almost immediately. Raised to 300 so
+        # the house keeps grinding. multiplier=15 -> up to 1500 attempts (early-stops at 100
+        # collected); at ~8% that lands ~100 successes (mostly the few graspable objects in
+        # house 11). Single-house was chosen knowingly: low object diversity, ~1-2 day run.
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "house_11_100_samples"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_prox_viz_sample"
+
+
+@register_config("FrankaSkinProxOvernightConfig")
+class FrankaSkinProxOvernightConfig(FrankaSkinProxNecessityPilotConfig):
+    """Multi-house overnight collection in the proximity-NECESSITY regime.
+
+    This is the "safety net" / scale run: same skin-active, low-surface, clutter-packed
+    regime as FrankaSkinProxNecessityPilotConfig, but spread across MANY houses with 4
+    parallel workers so trajectories accumulate over a long run. Single-house (house 11)
+    was intractably slow (~8% yield, ~1-2 days for 100); spreading the work across houses
+    gives both throughput AND object/scene diversity.
+
+    Regime is MODERATELY softened from the strict necessity knobs (which starved yield):
+    clutter 60 -> 25, packed at 6-35 cm, robot stand-off 0.15-0.55 m. Still low-surface and
+    skin-active (the arm operates among surfaces), just no longer near-zero yield. The
+    per-house budget is bounded by max_total_attempts_multiplier (samples_per_house * 12),
+    so unproductive houses are abandoned and a worker moves on rather than grinding forever.
+    Sequential-failure caps are raised above that budget so the multiplier is the binding
+    limit, not a premature consecutive-failure abort.
+    """
+
+    seed: int | None = 2026
+    num_workers: int = 4
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=PickAndPlaceTaskSampler,
+        pickup_types=PICK_AND_PLACE_OBJECTS,
+        source_surface_types=LOW_SURFACE_PREFIXES,   # enclosed / recessed targets
+        check_robot_placement_visibility=False,
+        num_added_pickups=25,                        # meaningful clutter, not yield-killing 60
+        min_reference_to_added_pickup_dist=0.06,     # pack close for skin activation
+        max_reference_to_added_pickup_dist=0.35,
+        max_robot_to_added_pickup_dist=0.55,
+        base_pose_sampling_radius_range=(0.15, 0.55),  # close stand-off -> arm among surfaces
+        robot_placement_rotation_range_rad=0.52,
+        samples_per_house=8,                         # move across houses for diversity
+        house_inds=list(range(0, 100)),
+        max_total_attempts_multiplier=12,            # <= 96 attempts/house, then move on
+        max_allowed_sequential_task_sampler_failures=200,
+        max_allowed_sequential_rollout_failures=200,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "overnight_prox_multi_house"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_prox_overnight_multi_house"
+
+    # seed: int | None = 2026
+    # num_workers: int = 2
+    # task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+    #     task_sampler_class=PickAndPlaceTaskSampler,
+    #     pickup_types=PICK_AND_PLACE_OBJECTS,
+    #     samples_per_house=4,
+    #     house_inds=list(range(1, 11)),
+    #     max_allowed_sequential_irrecoverable_failures=10000,
+    # )
+    # output_dir: Path = ASSETS_DIR / "datagen" / "pick_and_place_skin_pilot_smoke_v1"
+
+>>>>>>> 76f15d6 (fumehood stuff)
 
 @register_config("FrankaOpenDataGenConfig")
 class FrankaOpenDataGenConfig(OpeningBaseConfig):
@@ -1705,3 +1832,748 @@ class RUMPickAndPlaceMultiDataGenConfig(PickAndPlaceDataGenConfig):
     @property
     def tag(self) -> str:
         return "pnpmulti_bench"
+
+
+# --------------------------------------------------------------------------------------- #
+# Custom "reach into a drawer/cabinet cavity" proximity-necessity environment.
+# Does NOT use predefined houses: a hand-authored cavity scene + a graspable objaverse
+# object injected inside it (see molmo_spaces/tasks/cavity_pick_task_sampler.py and
+# molmo_spaces/data_generation/custom_scenes/cabinet_cavity.xml). Reuses the stock
+# franka_skin robot + skin cameras + proximity recording + privileged pick planner.
+# --------------------------------------------------------------------------------------- #
+from molmo_spaces.molmo_spaces_constants import ABS_PATH_OF_TOP_LEVEL_MOLMO_SPACES_DIR
+from molmo_spaces.tasks.cavity_pick_task_sampler import (
+    CavityPickTaskSampler,
+    CavityPickTaskSamplerV2,
+    RealHousePickTaskSampler,
+    RealTablePickTaskSampler,
+    ShelfReachPickTaskSampler,
+)
+
+_CUSTOM_SCENES = (
+    ABS_PATH_OF_TOP_LEVEL_MOLMO_SPACES_DIR / "molmo_spaces" / "data_generation" / "custom_scenes"
+)
+_CAVITY_XML = str(_CUSTOM_SCENES / "cabinet_cavity.xml")
+_CAVITY_XML_V2 = str(_CUSTOM_SCENES / "cabinet_cavity_v2.xml")
+_SHELF_XML = str(_CUSTOM_SCENES / "shelf_reach.xml")
+_CLUTTER_XML = str(_CUSTOM_SCENES / "clutter_reach.xml")
+
+
+@register_config("FrankaSkinCabinetCavitySmokeConfig")
+class FrankaSkinCabinetCavitySmokeConfig(PickBaseConfig):
+    """Tiny smoke test: 1 cavity scene, pick once. Run first to confirm the pipeline."""
+
+    scene_dataset: str = "user"
+    data_split: str = "train"
+    num_workers: int = 1
+    seed: int | None = 2026
+    filter_for_successful_trajectories: bool = True
+    disable_collision_checks: bool = False
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig()
+    camera_config: FrankaSkinCameraSystem = FrankaSkinCameraSystem()
+    task_type: str = "pick"
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=CavityPickTaskSampler,
+        scene_xml_paths=[_CAVITY_XML],
+        house_inds=[0],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "cabinet_cavity_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_cabinet_cavity_smoke"
+
+
+@register_config("FrankaSkinCabinetCavityConfig")
+class FrankaSkinCabinetCavityConfig(FrankaSkinCabinetCavitySmokeConfig):
+    """Full collection: 8 cavity instances (object variety) x N samples each."""
+
+    num_workers: int = 2
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=CavityPickTaskSampler,
+        scene_xml_paths=[_CAVITY_XML] * 8,   # 8 "houses" -> 8 different objaverse objects
+        house_inds=list(range(8)),
+        samples_per_house=15,                # ~120 target
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "cabinet_cavity_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_cabinet_cavity"
+
+
+@register_config("FrankaSkinCabinetCavityV2Config")
+class FrankaSkinCabinetCavityV2Config(FrankaSkinCabinetCavitySmokeConfig):
+    """v2 collection: wider cavity + flat/oversized objects filtered out + more object variety.
+    16 distinct objects (filtered for graspable-in-cavity shapes) x 10 samples -> ~160 target."""
+
+    num_workers: int = 3
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=CavityPickTaskSamplerV2,
+        scene_xml_paths=[_CAVITY_XML_V2] * 16,
+        house_inds=list(range(16)),
+        samples_per_house=10,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "cabinet_cavity_v2"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_cabinet_cavity_v2"
+
+
+@register_config("FrankaSkinShelfReachSmokeConfig")
+class FrankaSkinShelfReachSmokeConfig(FrankaSkinCabinetCavitySmokeConfig):
+    """Smoke test for the reach-into-a-shelf cupboard (all 29 sensors active >50% of the time).
+
+    disable_collision_checks=True: the cupboard is deliberately snug (so every sensor sees a wall
+    >50% of the time), which is too tight for the collision-checked planner to assume the
+    pregrasp/lift poses. Turning collision checks off lets the privileged demo reach in; the
+    proximity readings are real (the point of the dataset) and the arm only lightly grazes walls
+    at the extremes. Use the looser collision-free variant if physically-clean demos matter more.
+    """
+
+    disable_collision_checks: bool = False  # only the floor is physical (walls are ghost), planner handles it
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=[_SHELF_XML],
+        house_inds=[0],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "shelf_reach_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_shelf_reach_smoke"
+
+
+@register_config("FrankaSkinShelfReachConfig")
+class FrankaSkinShelfReachConfig(FrankaSkinShelfReachSmokeConfig):
+    """Full reach-into-shelf collection: 16 distinct objects x 10 samples (~160 target)."""
+
+    num_workers: int = 3
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=[_SHELF_XML] * 16,
+        house_inds=list(range(16)),
+        samples_per_house=10,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "shelf_reach_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_shelf_reach"
+
+
+@register_config("FrankaSkinClutterReachSmokeConfig")
+class FrankaSkinClutterReachSmokeConfig(FrankaSkinCabinetCavitySmokeConfig):
+    """Smoke test for 'clutter everywhere around the robot': a ghost-clutter field surrounds the
+    arm so ~all 29 sensors are active (28/29 measured; 1 self-occluded). Arm passes through the
+    ghost clutter, so the planner picks the target off the physical pad unobstructed."""
+
+    disable_collision_checks: bool = False  # only floor + obj_pad are physical
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=[_CLUTTER_XML],
+        house_inds=[0],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "clutter_reach_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_clutter_reach_smoke"
+
+
+@register_config("FrankaSkinClutterReachConfig")
+class FrankaSkinClutterReachConfig(FrankaSkinClutterReachSmokeConfig):
+    """Full 'clutter everywhere' collection: 24 distinct objects x 25 samples (~600 target),
+    8 parallel workers. Each object gets 25 trajectories with randomized object pose + robot base
+    jitter (the ghost-clutter field is fixed; randomize it per-house in add_auxiliary_objects for
+    more clutter diversity later)."""
+
+    num_workers: int = 8
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=[_CLUTTER_XML] * 24,
+        house_inds=list(range(24)),
+        samples_per_house=25,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "clutter_reach_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_clutter_reach"
+
+
+@register_config("FrankaSkinClutterReachSmallConfig")
+class FrankaSkinClutterReachSmallConfig(FrankaSkinClutterReachSmokeConfig):
+    """Smaller parallel clutter collection (quick set / can serve as val): 12 objects x 8 samples
+    (~96 target), 3 workers, separate output dir. Distinct seed -> samples different objects/poses
+    than the main 24x25 run. Low samples_per_house -> frequent saves, low crash-loss risk. Runs
+    concurrently with FrankaSkinClutterReachConfig (total 11 workers on 48 cores)."""
+
+    seed: int | None = 7
+    num_workers: int = 3
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=[_CLUTTER_XML] * 12,
+        house_inds=list(range(12)),
+        samples_per_house=8,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "clutter_reach_small"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_clutter_reach_small"
+
+
+_PILLAR_XMLS = [str(_CUSTOM_SCENES / f"pillar_avoid_{v}.xml") for v in range(12)]
+_TABLE_REAL_XML = str(_CUSTOM_SCENES / "table_shelf_real.xml")
+_REAL_ENV_XMLS = [
+    str(_CUSTOM_SCENES / f"real_env_{v}_{n}.xml")
+    for v, n in enumerate(["table_shelf", "kitchen", "shelfbay", "desk_hutch", "sink", "corner"])
+]
+
+
+@register_config("FrankaSkinPillarAvoidSmokeConfig")
+class FrankaSkinPillarAvoidSmokeConfig(FrankaSkinCabinetCavitySmokeConfig):
+    """Smoke test for the obstacle-AVOIDANCE environment: tall PHYSICAL pillars around the
+    robot/corridor. Collision checks stay ON so the privileged planner detours around the
+    pillars — that avoidance, with the skin recording the obstacles, is the training signal."""
+
+    disable_collision_checks: bool = False
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=[_PILLAR_XMLS[0]],
+        house_inds=[0],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pillar_avoid_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pillar_avoid_smoke"
+
+
+@register_config("FrankaSkinPillarAvoidConfig")
+class FrankaSkinPillarAvoidConfig(FrankaSkinPillarAvoidSmokeConfig):
+    """Obstacle-avoidance collection: 12 pillar-layout variants x 8 samples (~96 target),
+    one objaverse object per variant, frequent saves. Runs alongside the clutter collections."""
+
+    num_workers: int = 2
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ShelfReachPickTaskSampler,
+        scene_xml_paths=_PILLAR_XMLS,
+        house_inds=list(range(12)),
+        samples_per_house=8,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pillar_avoid_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pillar_avoid"
+
+
+@register_config("FrankaSkinRealTableSmokeConfig")
+class FrankaSkinRealTableSmokeConfig(FrankaSkinCabinetCavitySmokeConfig):
+    """Smoke test for the REALISTIC tabletop env (advisor feedback: no floating geometry).
+    Real wooden table + shelf + walls; PHYSICAL objaverse clutter gravity-settled on the table
+    around the target; collision-aware planning ON -> demos genuinely avoid the clutter."""
+
+    disable_collision_checks: bool = False
+    # LOW robot mount (advisor/user feedback): 0.35 m platform instead of the default 0.58 m,
+    # so the arm works AT table height and threads THROUGH the clutter rather than reaching
+    # down from a tower — makes the skin informative and looks like a real lab mount.
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig(base_size=[0.4, 0.4, 0.35])
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=RealTablePickTaskSampler,
+        scene_xml_paths=[_TABLE_REAL_XML],
+        house_inds=[0],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "real_table_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_real_table_smoke"
+
+
+@register_config("FrankaSkinRealTableConfig")
+class FrankaSkinRealTableConfig(FrankaSkinRealTableSmokeConfig):
+    """Realistic-environment collection across 6 scene variants (work table+shelf, kitchen
+    counter+overhead cabinets, bookshelf bay, office desk+hutch, kitchen sink, corner tables) x 4
+    target objects each = 24 houses x 10 samples (~240 target). Per-house clutter draws (different
+    real objects each house, gravity-settled); per-scene target spot via the 'target_spot' site."""
+
+    num_workers: int = 6
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=RealTablePickTaskSampler,
+        scene_xml_paths=_REAL_ENV_XMLS * 4,
+        house_inds=list(range(24)),
+        samples_per_house=10,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "real_table_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_real_table"
+
+
+@register_config("FrankaSkinRealHouseSmokeConfig")
+class FrankaSkinRealHouseSmokeConfig(FrankaSkinRealTableSmokeConfig):
+    """Smoke: controlled tall-clutter pick INSIDE a real ProcTHOR house (maximal realism)."""
+
+    scene_dataset: str = "procthor-objaverse"
+    data_split: str = "train"
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=RealHousePickTaskSampler,
+        house_inds=[33],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "real_house_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_real_house_smoke"
+
+
+@register_config("FrankaSkinRealHouseConfig")
+class FrankaSkinRealHouseConfig(FrankaSkinRealHouseSmokeConfig):
+    """Realistic in-house collection: known-good ProcTHOR houses, one work surface each,
+    LOW robot + tall real clutter, collision-aware avoidance demos."""
+
+    num_workers: int = 6
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=RealHousePickTaskSampler,
+        house_inds=[11, 12, 13, 14, 16, 17, 19, 20, 23, 25, 31, 33, 34, 36, 37, 46],
+        samples_per_house=10,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "real_house_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_real_house"
+
+
+# --------------------------------------------------------------------------------------- #
+# Parameterized enclosure-reach generator (advisor spec; ENCLOSURE_DATAGEN_DESIGN.md):
+# per-episode θ over aperture clearance / depth / target pose / protrusion / lighting via
+# mocap slabs; observation-realizable scripted expert (speed∝clearance, detection-gated
+# deflection, clean aborts); θ + cam-visibility label + behavior class logged to obs_scene.
+# --------------------------------------------------------------------------------------- #
+from molmo_spaces.tasks.enclosure_reach import (
+    EnclosureExpertPolicyConfig,
+    EnclosureReachSampler,
+    EnclosureReachTask,
+    FumehoodExpertPolicyConfig,
+    FumehoodSampler,
+    TourFumehoodSampler,
+    BigFumehoodPickSampler,
+    CubbyExpertPolicyConfig,
+    CubbyOverreachSampler,
+    PanelSlalomSampler,
+)
+from molmo_spaces.tasks.house_embed import (
+    HouseFumehoodSampler,
+    HousePanelSlalomSampler,
+    HouseCubbyOverreachSampler,
+)
+from molmo_spaces.configs.task_configs import PickTaskConfig
+
+_ENCLOSURE_XML = str(_CUSTOM_SCENES / "enclosure_param.xml")
+
+
+@register_config("FrankaSkinEnclosureSmokeConfig")
+class FrankaSkinEnclosureSmokeConfig(FrankaSkinCabinetCavitySmokeConfig):
+    """Smoke: 1 object x 4 episodes of the parameterized enclosure-reach generator."""
+
+    robot_config: BaseRobotConfig = FrankaSkinRobotConfig(base_size=[0.4, 0.4, 0.35])
+    policy_config: BasePolicyConfig = EnclosureExpertPolicyConfig()
+    task_config: PickTaskConfig = PickTaskConfig(task_cls=EnclosureReachTask)
+    filter_for_successful_trajectories: bool = False  # smoke: save failures too (videos for debugging)
+    task_horizon: int | None = 900
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=EnclosureReachSampler,
+        scene_xml_paths=[_ENCLOSURE_XML] * 8,
+        house_inds=list(range(8)),
+        samples_per_house=3,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    num_workers: int = 4
+    output_dir: Path = ASSETS_DIR / "datagen" / "enclosure_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_enclosure_smoke"
+
+
+@register_config("FrankaSkinEnclosureGenConfig")
+class FrankaSkinEnclosureGenConfig(FrankaSkinEnclosureSmokeConfig):
+    """Full enclosure-reach collection: 24 target objects x per-episode θ draws.
+    samples_per_house x houses sets the episode budget (~2-5k for the paper dataset)."""
+
+    filter_for_successful_trajectories: bool = True
+    num_workers: int = 6
+    policy_config: BasePolicyConfig = EnclosureExpertPolicyConfig(max_retries=2)
+    task_horizon: int | None = 450
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=EnclosureReachSampler,
+        scene_xml_paths=[_ENCLOSURE_XML] * 360,
+        house_inds=list(range(360)),
+        samples_per_house=6,            # 360 x 6 ≈ 2160; small houses -> frequent saves
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=6,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "enclosure_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_enclosure_gen"
+
+@register_config("FrankaSkinFumehoodSmokeConfig")
+class FrankaSkinFumehoodSmokeConfig(FrankaSkinEnclosureSmokeConfig):
+    """Fumehood finetune batch: VISIBLE-obstacle whole-arm-clearance task (no camera occlusion).
+    Glass sash overhead, jambs beside, upright obstacles inside. 8 objects x 3 episodes."""
+
+    policy_config: BasePolicyConfig = FumehoodExpertPolicyConfig(max_retries=2)
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=FumehoodSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 8,
+        house_inds=list(range(8)),
+        samples_per_house=3,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fumehood_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_fumehood_smoke"
+
+@register_config("FrankaSkinPanelSlalomSmokeConfig")
+class FrankaSkinPanelSlalomSmokeConfig(FrankaSkinFumehoodSmokeConfig):
+    """Photo-1 recreation: panel slalom on a table (visible obstacles, whole-arm clearance)."""
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=PanelSlalomSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "panel_slalom.xml")] * 8,
+        house_inds=list(range(8)),
+        samples_per_house=3,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "panel_slalom_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_panel_slalom_smoke"
+
+
+@register_config("FrankaSkinCubbySmokeConfig")
+class FrankaSkinCubbySmokeConfig(FrankaSkinFumehoodSmokeConfig):
+    """Photo-2 recreation: over-the-wall reach into an open-top cubby."""
+
+    policy_config: BasePolicyConfig = CubbyExpertPolicyConfig(max_retries=2)
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=CubbyOverreachSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "cubby_overreach.xml")] * 8,
+        house_inds=list(range(8)),
+        samples_per_house=3,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "cubby_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_cubby_smoke"
+
+
+# --------------------------------------------------------------------------------------- #
+# HOUSE-EMBEDDED variants: same parameterized task geometry, dropped into REAL ProcTHOR
+# rooms (advisor: "robot in a house"). The sampler discovers an open floor spot whose
+# robot-mounted exo cam faces room interior (no occlusion) and replays the task furniture +
+# mocap slabs there; the expert is embed-aware (task-local poses -> world). No scene_xml_paths
+# (the procthor dataset mapping supplies house XMLs via house_inds).
+# --------------------------------------------------------------------------------------- #
+def _house_sampler_cfg(cls, n_houses: int, samples: int) -> PickTaskSamplerConfig:
+    return PickTaskSamplerConfig(
+        task_sampler_class=cls,
+        house_inds=list(range(n_houses)),
+        samples_per_house=samples,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=12,
+        max_allowed_sequential_task_sampler_failures=400,
+        max_allowed_sequential_rollout_failures=400,
+        max_allowed_sequential_irrecoverable_failures=10000,
+    )
+
+
+@register_config("FrankaSkinHouseFumehoodSmokeConfig")
+class FrankaSkinHouseFumehoodSmokeConfig(FrankaSkinFumehoodSmokeConfig):
+    """Fumehood task embedded in real ProcTHOR rooms."""
+
+    scene_dataset: str = "procthor-objaverse"
+    data_split: str = "val"
+    task_sampler_config: PickTaskSamplerConfig = _house_sampler_cfg(HouseFumehoodSampler, 12, 2)
+    output_dir: Path = ASSETS_DIR / "datagen" / "house_fumehood_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_house_fumehood_smoke"
+
+
+@register_config("FrankaSkinHousePanelSmokeConfig")
+class FrankaSkinHousePanelSmokeConfig(FrankaSkinPanelSlalomSmokeConfig):
+    """Panel-slalom task embedded in real ProcTHOR rooms."""
+
+    scene_dataset: str = "procthor-objaverse"
+    data_split: str = "val"
+    task_sampler_config: PickTaskSamplerConfig = _house_sampler_cfg(HousePanelSlalomSampler, 12, 2)
+    output_dir: Path = ASSETS_DIR / "datagen" / "house_panel_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_house_panel_smoke"
+
+
+@register_config("FrankaSkinHouseCubbySmokeConfig")
+class FrankaSkinHouseCubbySmokeConfig(FrankaSkinCubbySmokeConfig):
+    """Over-the-wall cubby task embedded in real ProcTHOR rooms."""
+
+    scene_dataset: str = "procthor-objaverse"
+    data_split: str = "val"
+    task_sampler_config: PickTaskSamplerConfig = _house_sampler_cfg(HouseCubbyOverreachSampler, 12, 2)
+    output_dir: Path = ASSETS_DIR / "datagen" / "house_cubby_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_house_cubby_smoke"
+
+
+# --------------------------------------------------------------------------------------- #
+# HYBRID 40-SENSOR SKIN datagen: same fumehood task, but the gentact hybrid skin robot +
+# 40-sensor camera system (links 1-6) instead of the 29-sensor skin. Proves the new skin
+# flows through the full pipeline (40 obs/proximity keys, near-field captured by the
+# model_hybrid znear fix). Pair-checks with scripts/verify_hybrid_skin_sensors.py.
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinHybridFumehoodSmokeConfig")
+class FrankaSkinHybridFumehoodSmokeConfig(FrankaSkinFumehoodSmokeConfig):
+    """Fumehood task with the 40-sensor HYBRID skin (model_hybrid.xml).
+    Saves each sensor's 256x256 RGB view alongside the 8x8 depth (viz_sensor_rgb)."""
+
+    robot_config: BaseRobotConfig = FrankaSkinHybridRobotConfig(base_size=[0.4, 0.4, 0.35])
+    camera_config: FrankaSkinHybridCameraSystem = FrankaSkinHybridCameraSystem()
+    viz_sensor_rgb: bool = True
+    viz_sensor_resolution: tuple[int, int] = (256, 256)
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_fumehood_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_fumehood_smoke"
+
+
+@register_config("FrankaSkinHybridPnP5Config")
+class FrankaSkinHybridPnP5Config(FrankaSkinHybridFumehoodSmokeConfig):
+    """Quick 6-episode (2 houses x 3) hybrid-skin pick(+extract) collection in the fumehood.
+    Proven insertion frame (pedestal 0.35, bench 0.72, mouth x=0.58 — the frame with verified
+    physical grasps) + exactly 6 videos/episode (exo/wrist RGB+depth + 2 sensor mosaics) +
+    40-sensor depth and 256x256 sensor RGB in the h5. NOTE: tour-geometry (floor robot) datagen
+    needs elbow-aware paths — the straight-line expert stalls on the bench lip there."""
+
+    # Bench-height mount (pedestal 0.35): represents the FR3 bolted at the lab-bench height next
+    # to the 0.72 fume hood -- the realistic, physically-correct setup, and the only height that
+    # has reached a grasp. A floor-mounted arm cannot work a waist-high hood.
+    robot_config: BaseRobotConfig = FrankaSkinHybridRobotConfig(base_size=[0.4, 0.4, 0.35])
+    # PROVEN GRASP MACHINERY: the scripted EnclosureExpertPolicy (inherited via the smoke chain)
+    # plans a blind pinch and kept bulldozing the object (0% over many rounds). The cabinet-cavity
+    # pipeline -- same custom-scene sampler lineage -- grasps reliably because it uses
+    # PickPlannerPolicy, which executes annotated grasp poses from each object's grasp file.
+    # BigFumehoodPickSampler's pool is restricted to grasp-file-validated mugs/cups/produce.
+    policy_config: BasePolicyConfig = PickPlannerPolicyConfig()
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=BigFumehoodPickSampler,   # big sweep-scale door + clean pick -> grasps
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 2,
+        house_inds=list(range(1)),
+        samples_per_house=100,
+        # NO added pickupables: they spawn on the far-away staging floor (not in the hood) and
+        # the sampler RETARGETS the pick to one of them (observed: robot reached for 'Pan_9'
+        # parked at the staging area). Object variety comes from the cavity pool (24 cups/mugs).
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=True,
+        #randomize_textures_all = True,
+    )
+    num_workers: int = 1
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_pnp5"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_pnp5"
+
+
+
+@register_config("FrankaSkinHybridPnP5MassConfig")
+class FrankaSkinHybridPnP5MassConfig(FrankaSkinHybridPnP5Config):
+    """Mass collection: 24 houses (one grasp-validated object each — mugs/cups first, then
+    produce; pool wraps via house_index % pool) x 10 samples = 240 episodes. Walled fumehood
+    room keeps all 40 skin sensors returning. Launch only after the Check config passes."""
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=BigFumehoodPickSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 24,
+        house_inds=list(range(24)),
+        samples_per_house=10,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=True,
+    )
+    num_workers: int = 8
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_pnp5_mass"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_pnp5_mass"

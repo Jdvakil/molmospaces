@@ -379,6 +379,76 @@ def prepare_episode_for_saving(
     return batched_data
 
 
+def _save_mosaic_video(frames_by_sensor: dict, video_path: str, fps: float, logger, tile=160,
+                       cols=8) -> None:
+    """Tile per-sensor RGB frame streams into ONE labeled mosaic video."""
+    import cv2
+    names = list(frames_by_sensor.keys())
+    T = min(len(v) for v in frames_by_sensor.values())
+    rows = int(np.ceil(len(names) / cols))
+    H, W = rows * (tile + 14), cols * tile
+    # compose in RGB and encode through save_frames_to_mp4 (imageio/ffmpeg H.264) so the
+    # mosaic videos share the same encoding as the exo/wrist camera videos
+    out_frames = []
+    for t in range(T):
+        canvas = np.full((H, W, 3), 18, np.uint8)
+        for k, n in enumerate(names):
+            r, c = divmod(k, cols)
+            fr = frames_by_sensor[n][t]
+            if fr.ndim == 3 and fr.shape[2] >= 3:
+                img = cv2.resize(fr[..., :3], (tile, tile))
+            else:
+                img = cv2.resize(cv2.cvtColor(fr.astype(np.uint8), cv2.COLOR_GRAY2BGR), (tile, tile))
+            y0, x0 = r * (tile + 14) + 14, c * tile
+            canvas[y0:y0 + tile, x0:x0 + tile] = img
+            short = n.replace("link", "L").replace("_sensor_", ".").replace("_front", "F").replace("_back", "B")
+            cv2.putText(canvas, short, (x0 + 2, y0 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.34,
+                        (210, 210, 210), 1, cv2.LINE_AA)
+        out_frames.append(canvas)
+    save_frames_to_mp4(out_frames, video_path, fps=fps)
+    logger.info(f"Saved sensor RGB mosaic ({len(names)} sensors, {T} frames): {video_path}")
+
+
+def _save_depth_heatmap_video(observations_list, prox_names, video_path: str, fps: float,
+                              logger, tile=80, cols=8, near=0.015, far=4.0) -> None:
+    """Tile the native 8x8 SPAD depth (turbo, red=near) into ONE heatmap video.
+
+    Depth maps to color on a LOG scale: the SPAD's working band (1.5-50 cm) keeps most
+    of the colormap while room-scale returns (walls/ceiling at 2-4 m) remain visible as
+    the cold end instead of clipping to black. Only true no-returns (> far) go black.
+    """
+    import cv2
+    from matplotlib import colormaps
+    turbo = colormaps["turbo"]
+    rows = int(np.ceil(len(prox_names) / cols))
+    H, W = rows * (tile + 14), cols * tile
+    # compose in RGB and encode through save_frames_to_mp4 (imageio/ffmpeg H.264) so the
+    # heatmap video shares the same encoding as the exo/wrist camera videos
+    out_frames = []
+    log_near, log_far = np.log(near), np.log(far)
+    for obs in observations_list:
+        canvas = np.full((H, W, 3), 18, np.uint8)
+        for k, n in enumerate(prox_names):
+            r, c = divmod(k, cols)
+            d = np.asarray(obs.get(n))
+            if d is None or d.size == 0:
+                continue
+            d8 = d.reshape(-1, d.shape[-2], d.shape[-1])[-1]      # last substep
+            nrm = np.clip((np.log(np.maximum(d8, near)) - log_near) / (log_far - log_near), 0, 1)
+            img = (turbo(1.0 - nrm)[:, :, :3] * 255).astype(np.uint8)
+            img[d8 > far] = (14, 14, 14)
+            til = cv2.resize(img, (tile, tile), interpolation=cv2.INTER_NEAREST)
+            y0, x0 = r * (tile + 14) + 14, c * tile
+            canvas[y0:y0 + tile, x0:x0 + tile] = til
+            short = n.replace("proximity_", "").replace("link", "L").replace("_sensor_", ".")
+            short = short.replace("_front", "F").replace("_back", "B")
+            cv2.putText(canvas, short, (x0 + 2, y0 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                        (210, 210, 210), 1, cv2.LINE_AA)
+        out_frames.append(canvas)
+    save_frames_to_mp4(out_frames, video_path, fps=fps)
+    logger.info(f"Saved 8x8 depth heatmap mosaic ({len(prox_names)} sensors): {video_path}")
+
+
 def _save_sensor_video(
     sensor_name: str,
     sensor_type: str,
@@ -819,7 +889,8 @@ def _save_sensor_params_from_batched(obs_group, episode_data) -> None:
             camera_param_group.create_dataset(param_type, data=sensor_numpy, compression=COMPR)
 
 
-_PROXIMITY_NAME_RE = re.compile(r"^link\d+_sensor_\d+$")
+# matches link2_sensor_0 AND the hybrid skin's link5_front_sensor_0 / link5_back_sensor_3
+_PROXIMITY_NAME_RE = re.compile(r"^link\d+(?:_[a-z]+)?_sensor_\d+$")
 
 
 def _save_proximity_data_from_batched(obs_group, episode_data) -> None:
@@ -1060,35 +1131,48 @@ def save_videos_from_raw_observations(
     )
     log.debug(f"Camera sensors detected: {camera_sensors}")
 
-    # Extract and save video for each camera
+    # Extract and save video for each camera. Per-sensor skin viz streams (link*_sensor_*_viz_*)
+    # are NOT written individually (that's 80+ files/episode) — they are tiled into TWO mosaic
+    # videos: episode_X_sensors_rgb256.mp4 and episode_X_sensors_depth8_heatmap.mp4.
+    viz_rgb_frames: dict[str, list] = {}
     for sensor_name, sensor_type in camera_sensors.items():
-        # Extract frames from all observations for this camera
+        is_viz = "_viz_rgb" in sensor_name or "_viz_depth" in sensor_name
         frames = []
         for obs in observations_list:
             if sensor_name in obs:
                 frame_data = obs[sensor_name]
                 if isinstance(frame_data, np.ndarray):
-                    # Remove batch dimension if present
                     if frame_data.ndim == 4 and frame_data.shape[0] == 1:
                         frame_data = frame_data[0]
                     frames.append(frame_data)
+        if not frames:
+            if not is_viz:
+                log.warning(f"WARNING: No frames found for camera {sensor_name}")
+            continue
+        if "_viz_rgb" in sensor_name:
+            viz_rgb_frames[sensor_name.replace("_viz_rgb", "")] = frames
+            continue
+        if "_viz_depth" in sensor_name:
+            continue   # superseded by the 8x8 heatmap mosaic below
+        video_path = os.path.join(
+            save_dir, f"episode_{episode_idx:08d}_{sensor_name}{save_file_suffix}.mp4"
+        )
+        _save_sensor_video(sensor_name=sensor_name, sensor_type=sensor_type,
+                           frames=frames, video_path=video_path, fps=fps, logger=log)
+        log.debug(f"SUCCESS: Saved {sensor_type} video: {video_path} ({len(frames)} frames)")
 
-        if frames:
-            # Generate video path
-            video_path = os.path.join(
-                save_dir, f"episode_{episode_idx:08d}_{sensor_name}{save_file_suffix}.mp4"
-            )
-
-            # Use unified video saving function (handles all validation and conversion)
-            _save_sensor_video(
-                sensor_name=sensor_name,
-                sensor_type=sensor_type,
-                frames=frames,
-                video_path=video_path,
-                fps=fps,
-                logger=log,
-            )
-
-            log.debug(f"SUCCESS: Saved {sensor_type} video: {video_path} ({len(frames)} frames)")
-        else:
-            log.warning(f"WARNING: No frames found for camera {sensor_name}")
+    # ---- mosaic 1: all sensors' 256x256 RGB tiled into one video ----
+    if viz_rgb_frames:
+        _save_mosaic_video(
+            {k: v for k, v in sorted(viz_rgb_frames.items())},
+            os.path.join(save_dir, f"episode_{episode_idx:08d}_sensors_rgb256{save_file_suffix}.mp4"),
+            fps, log, tile=160)
+    # ---- mosaic 2: all sensors' native 8x8 depth as a turbo heatmap video ----
+    prox_names = sorted(k for k in observations_list[0]
+                        if _PROXIMITY_NAME_RE.match(str(k).replace("proximity_", "")))
+    if prox_names:
+        _save_depth_heatmap_video(
+            observations_list, prox_names,
+            os.path.join(save_dir,
+                         f"episode_{episode_idx:08d}_sensors_depth8_heatmap{save_file_suffix}.mp4"),
+            fps, log)

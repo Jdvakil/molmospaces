@@ -1,0 +1,36 @@
+<mujoco model="panel_slalom">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="6000" nconmax="6000"/>
+  <visual><global offwidth="1280" offheight="720"/><map znear="0.001"/>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.65 0.65 0.65"/></visual>
+  <asset>
+    <texture name="tabletex" type="2d" builtin="flat" rgb1="0.91 0.76 0.65" width="32" height="32"/>
+    <material name="tab" texture="tabletex" reflectance="0.05"/>
+    <texture name="floortex" type="2d" builtin="checker" rgb1="0.46 0.46 0.48" rgb2="0.40 0.40 0.42" width="300" height="300"/>
+    <material name="floormat" texture="floortex" texrepeat="10 10" reflectance="0.05"/>
+  </asset>
+  <default>
+    <default class="panel">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="500" rgba="0.93 0.79 0.22 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light name="l_key" pos="0.4 0.5 2.6" dir="0 0 -1" diffuse="0.95 0.95 0.95"/>
+    <light name="l_fill" pos="-0.6 -0.7 2.1" dir="0.3 0.3 -1" diffuse="0.5 0.5 0.5"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" material="floormat" contype="8" conaffinity="15"/>
+    <geom name="table_top" class="panel" type="box" pos="0.95 0 0.70" size="0.45 0.62 0.02" material="tab"/>
+    <geom name="tleg1" class="panel" type="box" pos="0.55 0.57 0.34" size="0.03 0.03 0.34" rgba="0.85 0.7 0.3 1"/>
+    <geom name="tleg2" class="panel" type="box" pos="0.55 -0.57 0.34" size="0.03 0.03 0.34" rgba="0.85 0.7 0.3 1"/>
+    <geom name="tleg3" class="panel" type="box" pos="1.35 0.57 0.34" size="0.03 0.03 0.34" rgba="0.85 0.7 0.3 1"/>
+    <geom name="tleg4" class="panel" type="box" pos="1.35 -0.57 0.34" size="0.03 0.03 0.34" rgba="0.85 0.7 0.3 1"/>
+    <!-- two pairs of upright panels (mocap): gap 1 at entry, gap 2 deeper; offsets per episode -->
+    <body name="p1l" mocap="true" pos="0.62 0.30 0.92"><geom name="p1l_g" class="panel" type="box" size="0.015 0.14 0.20"/></body>
+    <body name="p1r" mocap="true" pos="0.62 -0.30 0.92"><geom name="p1r_g" class="panel" type="box" size="0.015 0.14 0.20"/></body>
+    <body name="p2l" mocap="true" pos="0.82 0.30 0.92"><geom name="p2l_g" class="panel" type="box" size="0.015 0.14 0.20" rgba="0.95 0.85 0.35 1"/></body>
+    <body name="p2r" mocap="true" pos="0.82 -0.30 0.92"><geom name="p2r_g" class="panel" type="box" size="0.015 0.14 0.20" rgba="0.95 0.85 0.35 1"/></body>
+  </worldbody>
+</mujoco>

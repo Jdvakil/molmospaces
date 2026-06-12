@@ -412,6 +412,28 @@ def _skin_sensor_camera_specs() -> list[AllCameraTypes]:
     return specs
 
 
+# gentact HYBRID skin: 40 SPAD sensors with the link5 front/back split (matches
+# assets/robots/franka_skin/model_hybrid.xml). Explicit names so they map 1:1 to the MJCF cameras.
+_HYBRID_SKIN_SENSOR_NAMES = (
+    [f"link1_sensor_{i}" for i in range(7)]
+    + [f"link2_sensor_{i}" for i in range(7)]
+    + [f"link3_sensor_{i}" for i in range(5)]
+    + [f"link4_sensor_{i}" for i in range(5)]
+    + [f"link5_front_sensor_{i}" for i in range(4)]
+    + [f"link5_back_sensor_{i}" for i in range(6)]
+    + [f"link6_sensor_{i}" for i in range(6)]
+)
+
+
+def _hybrid_skin_sensor_camera_specs() -> list[AllCameraTypes]:
+    """40 hybrid-skin 8x8 depth proximity cameras (HFOV=45 deg), 1:1 with model_hybrid.xml."""
+    return [
+        MjcfCameraConfig(name=n, mjcf_name=n, robot_namespace="robot_0/",
+                         fov=45.0, record_depth=True, is_proximity_sensor=True)
+        for n in _HYBRID_SKIN_SENSOR_NAMES
+    ]
+
+
 class FrankaSkinCameraSystem(CameraSystemConfig):
     """Camera system for Franka with proximity-sensor skin.
 
@@ -446,6 +468,36 @@ class FrankaSkinCameraSystem(CameraSystemConfig):
             },
         ),
         *_skin_sensor_camera_specs(),
+    ]
+
+
+class FrankaSkinHybridCameraSystem(FrankaSkinCameraSystem):
+    """Same wrist + exo RGB context, but the 40-sensor gentact HYBRID proximity skin
+    (links 1-6) instead of the 29-sensor layout. Pair with FrankaSkinHybridRobotConfig."""
+
+    cameras: list[AllCameraTypes] = [
+        MjcfCameraConfig(
+            name="wrist_camera",
+            mjcf_name="gripper/wrist_camera",
+            robot_namespace="robot_0/",
+            fov=56.74,
+            record_depth=True,
+        ),
+        RobotMountedCameraConfig(
+            name="exo_camera_1",
+            reference_body_names=["robot_0/fr3_link0"],
+            # BEHIND the robot, pulled back + raised, AIMED at the workspace via lookat_offset
+            # (no hand-computed quaternion — the mount convention bit us once). Whole robot in
+            # frame between the camera and the task.
+            camera_offset=[-1.05, -0.55, 1.30],
+            camera_quaternion=None,
+            lookat_offset=[0.55, 0.0, 0.45],
+            up_axis="z",
+            fov=58.0,
+            record_depth=True,
+            visibility_constraints={"__task_objects__": 0.001},
+        ),
+        *_hybrid_skin_sensor_camera_specs(),
     ]
 
 

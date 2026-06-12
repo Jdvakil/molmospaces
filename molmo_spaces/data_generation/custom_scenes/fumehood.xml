@@ -1,0 +1,72 @@
+<mujoco model="fumehood">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="6000" nconmax="6000"/>
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+    <map znear="0.001"/>
+    <headlight ambient="0.5 0.5 0.5" diffuse="0.65 0.65 0.65"/>
+  </visual>
+  <asset>
+    <texture name="benchtex" type="2d" builtin="flat" rgb1="0.85 0.86 0.88" width="32" height="32"/>
+    <material name="bench" texture="benchtex" reflectance="0.1"/>
+    <texture name="floortex" type="2d" builtin="checker" rgb1="0.46 0.46 0.48" rgb2="0.40 0.40 0.42" width="300" height="300"/>
+    <material name="floormat" texture="floortex" texrepeat="10 10" reflectance="0.05"/>
+  </asset>
+  <default>
+    <default class="hood">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="700" rgba="0.92 0.93 0.94 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light name="l_key" pos="0.4 0.5 2.6" dir="0 0 -1" diffuse="0.95 0.95 0.95"/>
+    <light name="l_fill" pos="-0.6 -0.7 2.1" dir="0.3 0.3 -1" diffuse="0.5 0.5 0.5"/>
+    <light name="l_hood" pos="0.85 0 1.55" dir="0 0 -1" diffuse="0.6 0.6 0.6"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" material="floormat" contype="8" conaffinity="15"/>
+    <!-- lab room shell ~2 m around the robot stance (robot ~origin, bench at x=0.95):
+         guarantees every SPAD ray terminates on a surface instead of the no-return
+         far plane, so outward-facing skin sensors always report a finite range. -->
+    <geom name="room_wall_back"  class="hood" type="box" pos="-2.0 0 1.4"  size="0.05 2.05 1.4" rgba="0.82 0.83 0.85 1"/>
+    <geom name="room_wall_front" class="hood" type="box" pos="2.4 0 1.4"   size="0.05 2.05 1.4" rgba="0.82 0.83 0.85 1"/>
+    <geom name="room_wall_left"  class="hood" type="box" pos="0.2 2.0 1.4"  size="2.25 0.05 1.4" rgba="0.80 0.81 0.84 1"/>
+    <geom name="room_wall_right" class="hood" type="box" pos="0.2 -2.0 1.4" size="2.25 0.05 1.4" rgba="0.80 0.81 0.84 1"/>
+    <geom name="room_ceiling"    class="hood" type="box" pos="0.2 0 2.82"  size="2.25 2.05 0.04" rgba="0.90 0.90 0.92 1"/>
+    <!-- lab bench: work surface z=0.72 -->
+    <geom name="bench_top" class="hood" type="box" pos="0.95 0 0.70" size="0.45 0.60 0.02" material="bench"/>
+    <geom name="bench_body" class="hood" type="box" pos="0.95 0 0.35" size="0.42 0.57 0.33" rgba="0.80 0.81 0.83 1"/>
+    <!-- fumehood enclosure on the bench: side walls, back, top. FRONT = open, with a raised
+         opaque sash RAIL (mocap) at the top of the opening. NO glass anywhere: SPADs are
+         unreliable on glass (IR transmission/specular), so the sim makes no glass claims. -->
+    <geom name="hood_side_l" class="hood" type="box" pos="0.95 0.45 1.12" size="0.40 0.012 0.40" rgba="0.90 0.91 0.92 1"/>
+    <geom name="hood_side_r" class="hood" type="box" pos="0.95 -0.45 1.12" size="0.40 0.012 0.40" rgba="0.90 0.91 0.92 1"/>
+    <geom name="hood_back"  class="hood" type="box" pos="1.36 0 1.12" size="0.012 0.46 0.40" rgba="0.88 0.89 0.90 1"/>
+    <geom name="hood_top"   class="hood" type="box" pos="0.95 0 1.53" size="0.42 0.46 0.015"/>
+    <geom name="hood_frame_l" class="hood" type="box" pos="0.58 0.45 1.12" size="0.02 0.02 0.40"/>
+    <geom name="hood_frame_r" class="hood" type="box" pos="0.58 -0.45 1.12" size="0.02 0.02 0.40"/>
+    <!-- SASH RAIL (opaque aluminum, sash raised): bottom edge = opening height (clearance
+         knob). Arm passes UNDER it; cameras see the interior through the OPEN front. -->
+    <body name="sash" mocap="true" pos="0.58 0 1.30">
+      <geom name="sash_g" class="hood" type="box" size="0.015 0.44 0.025" rgba="0.62 0.64 0.66 1"/>
+    </body>
+    <!-- side jambs: mocap, set opening WIDTH -->
+    <body name="jamb_l" mocap="true" pos="0.58 0.35 0.92">
+      <geom name="jamb_l_g" class="hood" type="box" size="0.012 0.18 0.20" rgba="0.88 0.89 0.90 1"/>
+    </body>
+    <body name="jamb_r" mocap="true" pos="0.58 -0.35 0.92">
+      <geom name="jamb_r_g" class="hood" type="box" size="0.012 0.18 0.20" rgba="0.88 0.89 0.90 1"/>
+    </body>
+    <!-- in-hood obstacles: VISIBLE upright items (beaker-stand bars) the arm must thread between -->
+    <body name="protr_s" mocap="true" pos="0 0.8 -2.0">
+      <geom name="protr_s_g" class="hood" type="box" size="0.0175 0.0175 0.10" rgba="0.55 0.6 0.65 1"/>
+    </body>
+    <body name="protr_m" mocap="true" pos="0 1.2 -2.0">
+      <geom name="protr_m_g" class="hood" type="box" size="0.025 0.025 0.11" rgba="0.5 0.55 0.6 1"/>
+    </body>
+    <body name="protr_l" mocap="true" pos="0 1.6 -2.0">
+      <geom name="protr_l_g" class="hood" type="box" size="0.035 0.035 0.12" rgba="0.45 0.5 0.55 1"/>
+    </body>
+  </worldbody>
+</mujoco>
