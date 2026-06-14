@@ -1863,6 +1863,9 @@ from molmo_spaces.tasks.enclosure_reach import (
     FumehoodSampler,
     TourFumehoodSampler,
     BigFumehoodPickSampler,
+    ObstacleFumehoodPickSampler,
+    ObstacleFumehoodPickCheckSampler,
+    ObstacleAwarePickPlannerPolicyConfig,
     CubbyExpertPolicyConfig,
     CubbyOverreachSampler,
     PanelSlalomSampler,
@@ -2172,3 +2175,75 @@ class FrankaSkinHybridPnP5MassConfig(FrankaSkinHybridPnP5Config):
     @property
     def tag(self) -> str:
         return "franka_skin_hybrid_pnp5_mass"
+
+
+# --------------------------------------------------------------------------------------- #
+# ONE-ENV OBSTACLE collection for ACT: single task (red cup, pool index 1), single scene,
+# hazard bar on the bench beside the approach in 75% of episodes. The obstacle-aware pick
+# planner bows the approach around the bar, so demos pair close-range (3-15 cm) proximity
+# returns with a visible lateral veer — the steering signal the safety CVAE trains on.
+# Textures/lighting fixed (one-env visual imitation; theta still jitters light +-15%).
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinHybridObstacleCheckConfig")
+class FrankaSkinHybridObstacleCheckConfig(FrankaSkinHybridPnP5Config):
+    """Preflight: house 1 (red cup) x 2 episodes, 1 worker, bar FORCED present.
+    Verify in the outputs: orange bar in the exo video, '[ObstaclePick] DEFLECT' in the
+    log, prox returns in the 3-15 cm band, grasp still succeeds. Then launch the
+    Obstacle config below."""
+
+    policy_config: BasePolicyConfig = ObstacleAwarePickPlannerPolicyConfig()
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ObstacleFumehoodPickCheckSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 2,
+        house_inds=[1],
+        samples_per_house=2,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=False,
+        randomize_lighting=False,
+    )
+    num_workers: int = 1
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_obstacle_check"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_obstacle_check"
+
+
+@register_config("FrankaSkinHybridObstacleConfig")
+class FrankaSkinHybridObstacleConfig(FrankaSkinHybridObstacleCheckConfig):
+    """The ACT collection run: 8 wrap-around house indices (1, 25, 49, ... all = 1 mod 24
+    -> the SAME red cup task) x 13 samples = 104 episodes on 8 workers. Wrap-around
+    indices exist purely to parallelize: the pipeline hands one house to one worker, so
+    a single index would serialize the run. 75% of episodes have the bar."""
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ObstacleFumehoodPickSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 170,
+        house_inds=[1, 25, 49, 73, 97, 121, 145, 169],
+        samples_per_house=25,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=False,
+    )
+    num_workers: int = 4
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_obstacle_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_obstacle_v1"

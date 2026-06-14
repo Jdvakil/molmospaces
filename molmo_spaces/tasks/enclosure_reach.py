@@ -677,7 +677,10 @@ class EnclosureExpertPolicy(BaseObjectManipulationPlannerPolicy):
 
 
 # ---------------- policy config wiring ----------------
-from molmo_spaces.configs.policy_configs import ObjectManipulationPlannerPolicyConfig  # noqa: E402
+from molmo_spaces.configs.policy_configs import (  # noqa: E402
+    ObjectManipulationPlannerPolicyConfig,
+    PickPlannerPolicyConfig,
+)
 
 
 class EnclosureExpertPolicyConfig(ObjectManipulationPlannerPolicyConfig):
@@ -1101,3 +1104,162 @@ class BigFumehoodPickSampler(FumehoodSampler):
         bx, by, bz = self._cur_base_xyz
         self._cur_base_xyz = (bx + self.BASE_FWD, by, bz)
         return super()._sample_and_place_robot(env)
+
+
+class ObstacleFumehoodPickSampler(BigFumehoodPickSampler):
+    """Big-opening fumehood pick WITH a hazard bar standing on the bench beside the
+    approach corridor. Purpose: saturate the 3-15 cm proximity band (the steering band
+    a safety head trains on) while the grasp-file pick machinery keeps succeeding.
+
+    Bar placement is COUPLED to the object draw: _obj_rest puts the object on the bar's
+    side of the corridor a controlled lateral gap from the bar's inner face, so the
+    wrist/gripper passes the bar at ~4-12 cm on every obstacle episode instead of the
+    free-pick ~50 cm. Pair with ObstacleAwarePickPlannerPolicy, which reads the bar AABB
+    from scene_params and bows the approach away from it (a visible 'veer' in demos).
+    Free episodes (1 - OBSTACLE_P) reproduce the clean BigFumehoodPick behavior."""
+
+    OBSTACLE_P = 0.75            # fraction of episodes with the bar present
+    BAR_FACE_Y = (0.14, 0.24)    # |y| of the bar's inner (corridor-side) face
+    BAR_X_FRAC = (0.20, 0.55)    # bar depth into the hood, fraction of hood depth
+    # lateral gap bar face -> object center. With the policy's GRIP_HALF=0.10 and
+    # SAFE_GAP=0.08 this puts the straight-line surface clearance at 2-11 cm, so
+    # roughly 2/3 of bar episodes trigger a visible deflection and the rest pass
+    # close without one — both modes appear in the ACT data.
+    OBJ_GAP = (0.12, 0.20)
+
+    def _draw_theta(self):
+        th = super()._draw_theta()   # Big's clean-pick draws (protrusion forced off)
+        # near-constant lighting: one-env ACT data should not fight 10x brightness swings
+        th["light_scale"] = float(np.random.uniform(0.75, 1.10))
+        if np.random.random() < self.OBSTACLE_P:
+            # cell name outside hidden/visible skips _sample_task's raycast rejection
+            # loop (which would redraw the coupled placement fields drawn here)
+            th["cell"] = "bar"
+            th["protrusion_present"] = True
+            th["protr_name"] = str(np.random.choice(list(PROTR.keys())))
+            th["protr_wall"] = str(np.random.choice(["left", "right"]))
+            th["protr_pos_frac"] = float(np.random.uniform(*self.BAR_X_FRAC))
+            face = float(np.random.uniform(*self.BAR_FACE_Y))
+            th["bar_face_y"] = face
+            # FumehoodSampler._apply_theta puts the inner face at side*(ap_w/2 - intrusion)
+            th["intrusion"] = float(th["ap_w"] / 2 - face)
+            th["residual_margin"] = float(th["clearance"] - th["intrusion"])
+            th["obj_gap"] = float(np.random.uniform(*self.OBJ_GAP))
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        # hazard-orange bars: visually distinct for the cameras (and the advisor)
+        m = env.current_model
+        for name in PROTR:
+            try:
+                m.geom_rgba[m.geom(f"{name}_g").id] = (1.0, 0.45, 0.05, 1.0)
+            except Exception:
+                pass
+
+    def _obj_rest(self):
+        x, y, z = super()._obj_rest()
+        th = getattr(self, "_theta", None) or {}
+        if th.get("protrusion_present"):
+            side = 1.0 if th["protr_wall"] == "left" else -1.0
+            y = float(side * (th["bar_face_y"] - th["obj_gap"]))
+        return (x, y, z)
+
+
+class ObstacleFumehoodPickCheckSampler(ObstacleFumehoodPickSampler):
+    """Preflight variant: bar present on EVERY episode."""
+
+    OBSTACLE_P = 1.0
+
+
+from molmo_spaces.policy.solvers.object_manipulation.pick_planner_policy import (  # noqa: E402
+    PickPlannerPolicy,
+)
+
+
+class ObstacleAwarePickPlannerPolicy(PickPlannerPolicy):
+    """PickPlannerPolicy + a deflection around the episode's bar: if the straight
+    start->pregrasp TCP line passes the bar's inner face closer than the gripper
+    envelope + a safety gap, the approach is rebuilt with two waypoints bracketing
+    the bar, bowed away from it laterally, at a cautious passing speed. Episodes
+    without a bar (or with a naturally-clearing line) keep the parent's exact plan,
+    so this is a strict superset of the proven pick behavior."""
+
+    GRIP_HALF = 0.10     # open-gripper lateral half-extent around the TCP line
+    SAFE_GAP = 0.08      # surface clearance the deflection enforces beyond GRIP_HALF
+    PASS_SPEED = 0.05    # m/s while alongside the bar (between the deflect waypoints)
+
+    def __init__(self, config, task) -> None:
+        super().__init__(config, task)
+        self.behavior_class = "free"
+
+    @staticmethod
+    def _pose(p: np.ndarray, R: np.ndarray) -> np.ndarray:
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = p
+        return T
+
+    def _compute_trajectory(self) -> list[ActionPrimitive]:
+        prims = super()._compute_trajectory()
+        th = getattr(self.task, "scene_params", {}) or {}
+        if not th.get("protrusion_present") or "protr_center" not in th:
+            return prims
+        c = np.asarray(th["protr_center"], dtype=float)
+        h = np.asarray(th["protr_half"], dtype=float)
+        approach = prims[1]
+        seg_pre, seg_grasp = approach._move_segments[0], approach._move_segments[1]
+        p0 = seg_pre.start_pose[:3, 3].copy()
+        p1 = seg_pre.end_pose[:3, 3].copy()
+        if abs(p1[0] - p0[0]) < 1e-6:
+            return prims
+        t_bar = (c[0] - p0[0]) / (p1[0] - p0[0])
+        if not (0.02 < t_bar < 0.98):
+            return prims                       # approach never crosses the bar's x-station
+        cross = p0 + t_bar * (p1 - p0)
+        side = 1.0 if c[1] >= 0.0 else -1.0
+        face_y = c[1] - side * h[1]            # inner (corridor-side) face of the bar
+        clear = side * (face_y - cross[1]) - self.GRIP_HALF
+        need = self.SAFE_GAP - clear
+        if need <= 0.0:
+            return prims                       # straight line already clears the bar
+        self.behavior_class = "deflect"
+        ap_w = float(th.get("ap_w", 0.6))
+        y_wp = float(np.clip(cross[1] - side * need, -(ap_w / 2 - 0.12), ap_w / 2 - 0.12))
+        # waypoints bracketing the bar along x, bowed to y_wp, z on the original line
+        x_lo, x_hi = sorted((p0[0], p1[0]))
+        xa = float(np.clip(c[0] - (h[0] + 0.10), x_lo + 0.01, x_hi - 0.02))
+        xb = float(np.clip(c[0] + (h[0] + 0.08), xa + 0.01, x_hi - 0.01))
+        line_z = lambda x: p0[2] + (x - p0[0]) / (p1[0] - p0[0]) * (p1[2] - p0[2])  # noqa: E731
+        R = seg_pre.end_pose[:3, :3]
+        wp_a = self._pose(np.array([xa, y_wp, line_z(xa)]), R)
+        wp_b = self._pose(np.array([xb, y_wp, line_z(xb)]), R)
+        log.info(f"[ObstaclePick] DEFLECT: bar face y={face_y:+.3f}, line clear "
+                 f"{clear * 100:.1f}cm -> bow {need * 100:.1f}cm to y={y_wp:+.3f}")
+        robot_view = self.task.env.current_robot.robot_view
+        prims[1] = TCPMoveSequence(
+            robot_view,
+            self._tcp_to_jp_fn,
+            self.policy_config.move_settle_time,
+            gripper_empty_threshold=self.policy_config.gripper_empty_threshold,
+            tcp_pos_err_threshold=self.policy_config.tcp_pos_err_threshold,
+            tcp_rot_err_threshold=self.policy_config.tcp_rot_err_threshold,
+            move_segments=[
+                TCPMoveSegment(name="pregrasp", start_pose=seg_pre.start_pose,
+                               end_pose=wp_a, speed=self.policy_config.speed_fast),
+                TCPMoveSegment(name="pregrasp", start_pose=wp_a,
+                               end_pose=wp_b, speed=self.PASS_SPEED),
+                TCPMoveSegment(name="pregrasp", start_pose=wp_b,
+                               end_pose=seg_pre.end_pose, speed=self.policy_config.speed_slow),
+                seg_grasp,
+            ],
+        )
+        return prims
+
+
+class ObstacleAwarePickPlannerPolicyConfig(PickPlannerPolicyConfig):
+    """Wires ObstacleAwarePickPlannerPolicy as the rollout policy."""
+
+    def model_post_init(self, __context) -> None:
+        super().model_post_init(__context)
+        self.policy_cls = ObstacleAwarePickPlannerPolicy
