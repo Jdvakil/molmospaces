@@ -28,12 +28,14 @@ from molmo_spaces.configs.camera_configs import (
     FrankaRandomizedDroidCameraSystem,
     FrankaSkinCameraSystem,
     FrankaSkinHybridCameraSystem,
+    FrankaSkinHybridCameraSystemExoBlind,
     RBY1GoProD455CameraSystem,
 )
 from molmo_spaces.configs.policy_configs import (
     CuroboOpenClosePlannerPolicyConfig,
     CuroboPickAndPlacePlannerPolicyConfig,
     OpenClosePlannerPolicyConfig,
+    PickAndPlacePlannerPolicyConfig,
     PickPlannerPolicyConfig,
 )
 from molmo_spaces.configs.robot_configs import (
@@ -1440,6 +1442,8 @@ from molmo_spaces.molmo_spaces_constants import ABS_PATH_OF_TOP_LEVEL_MOLMO_SPAC
 from molmo_spaces.tasks.cavity_pick_task_sampler import (
     CavityPickTaskSampler,
     CavityPickTaskSamplerV2,
+    FridgePickAndPlaceTaskSampler,
+    FridgePickAndPlaceTaskSamplerV2,
     RealHousePickTaskSampler,
     RealTablePickTaskSampler,
     ShelfReachPickTaskSampler,
@@ -1452,6 +1456,9 @@ _CAVITY_XML = str(_CUSTOM_SCENES / "cabinet_cavity.xml")
 _CAVITY_XML_V2 = str(_CUSTOM_SCENES / "cabinet_cavity_v2.xml")
 _SHELF_XML = str(_CUSTOM_SCENES / "shelf_reach.xml")
 _CLUTTER_XML = str(_CUSTOM_SCENES / "clutter_reach.xml")
+_FRIDGE_XML = str(_CUSTOM_SCENES / "fridge_two_level.xml")
+_FRIDGE_XML_V2 = str(_CUSTOM_SCENES / "fridge_two_level_v2.xml")
+_FRIDGE_XML_V2_BLIND = str(_CUSTOM_SCENES / "fridge_two_level_v2_blind.xml")
 
 
 @register_config("FrankaSkinCabinetCavitySmokeConfig")
@@ -1593,6 +1600,235 @@ class FrankaSkinShelfReachConfig(FrankaSkinShelfReachSmokeConfig):
     @property
     def tag(self) -> str:
         return "franka_skin_shelf_reach"
+
+
+@register_config("FridgeTwoLevelPnPSmokeConfig")
+class FridgeTwoLevelPnPSmokeConfig(PickAndPlaceDataGenConfig):
+    """Smoke test: 40-sensor hybrid FR3 picks from upper fridge, places on lower pad."""
+
+    scene_dataset: str = "user"
+    data_split: str = "train"
+    num_workers: int = 1
+    seed: int | None = 2026
+    task_horizon: int = 900
+    filter_for_successful_trajectories: bool = True
+    disable_collision_checks: bool = False
+    robot_config: BaseRobotConfig = FrankaSkinHybridRobotConfig(base_size=[0.4, 0.4, 0.35])
+    camera_config: FrankaSkinHybridCameraSystem = FrankaSkinHybridCameraSystem()
+    policy_config: PickAndPlacePlannerPolicyConfig = PickAndPlacePlannerPolicyConfig(
+        pregrasp_z_offset=0.04,
+        speed_slow=0.05,
+        speed_fast=0.10,
+        grasp_z_offset=0.0,
+        grasp_vertical_cost_weight=0.0,
+        grasp_horizontal_cost_weight=5.0,
+        gripper_close_duration=1.0,
+        gripper_empty_threshold=0.0,
+        max_retries=3,
+        tcp_pos_err_threshold=0.24,
+        tcp_rot_err_threshold=np.radians(180.0),
+    )
+    viz_sensor_rgb: bool = True
+    viz_sensor_resolution: tuple[int, int] = (256, 256)
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=FridgePickAndPlaceTaskSampler,
+        scene_xml_paths=[_FRIDGE_XML] * 8,
+        house_inds=list(range(8)),
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=1,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        episodes_per_receptacle=0,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp_smoke"
+
+
+@register_config("FridgeTwoLevelPnPConfig")
+class FridgeTwoLevelPnPConfig(FridgeTwoLevelPnPSmokeConfig):
+    """Full collection: one-sample scene copies, so each success flushes promptly."""
+
+    num_workers: int = 8
+    policy_config: PickAndPlacePlannerPolicyConfig = PickAndPlacePlannerPolicyConfig(
+        pregrasp_z_offset=0.04,
+        speed_slow=0.08,
+        speed_fast=0.16,
+        grasp_z_offset=0.0,
+        grasp_vertical_cost_weight=0.0,
+        grasp_horizontal_cost_weight=5.0,
+        gripper_close_duration=1.0,
+        gripper_empty_threshold=0.0,
+        max_retries=0,
+        tcp_pos_err_threshold=0.24,
+        tcp_rot_err_threshold=np.radians(180.0),
+    )
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=FridgePickAndPlaceTaskSampler,
+        scene_xml_paths=[_FRIDGE_XML] * 240,
+        house_inds=list(range(240)),
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        episodes_per_receptacle=0,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_v1"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp"
+
+
+@register_config("FridgeTwoLevelPnPV2SmokeConfig")
+class FridgeTwoLevelPnPV2SmokeConfig(PickAndPlaceDataGenConfig):
+    """Smoke test for the physically valid open-top v2 fridge pick-and-place."""
+
+    scene_dataset: str = "user"
+    data_split: str = "train"
+    num_workers: int = 1
+    seed: int | None = 2026
+    task_horizon: int = 900
+    filter_for_successful_trajectories: bool = True
+    disable_collision_checks: bool = False
+    robot_config: BaseRobotConfig = FrankaSkinHybridRobotConfig(base_size=[0.4, 0.4, 0.35])
+    camera_config: FrankaSkinHybridCameraSystem = FrankaSkinHybridCameraSystem()
+    policy_config: PickAndPlacePlannerPolicyConfig = PickAndPlacePlannerPolicyConfig(
+        place_z_offset=0.35,
+    )
+    viz_sensor_rgb: bool = True
+    viz_sensor_resolution: tuple[int, int] = (256, 256)
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=FridgePickAndPlaceTaskSamplerV2,
+        scene_xml_paths=[_FRIDGE_XML_V2] * 4,
+        house_inds=list(range(4)),
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        episodes_per_receptacle=0,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_v2_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp_v2_smoke"
+
+
+@register_config("FridgeTwoLevelPnPV2BlindSmokeConfig")
+class FridgeTwoLevelPnPV2BlindSmokeConfig(FridgeTwoLevelPnPV2SmokeConfig):
+    """Prototype: v2 fridge + a front visor that BLINDS the exocentric camera during
+    approach/grasp (exo->target ray crosses the front plane at z~0.87; visor covers z 0.84-1.05).
+    filter_for_successful_trajectories=False so grasp-window frames are kept for the audit even
+    if the forward exit/place is impeded. Few houses, 1 worker -- confirm the blind-frame
+    fraction rises BEFORE committing to a full collection."""
+
+    filter_for_successful_trajectories: bool = False
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=FridgePickAndPlaceTaskSamplerV2,
+        scene_xml_paths=[_FRIDGE_XML_V2_BLIND] * 3,
+        house_inds=list(range(3)),
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=2,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        episodes_per_receptacle=0,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_v2_blind_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp_v2_blind_smoke"
+
+
+@register_config("FridgeTwoLevelPnPV2ExoBlindSmokeConfig")
+class FridgeTwoLevelPnPV2ExoBlindSmokeConfig(FridgeTwoLevelPnPV2SmokeConfig):
+    """v2 fridge (physically UNCHANGED open-top scene) with the exo repositioned low/side so the
+    side wall occludes the target during the in-compartment grasp. Camera move does not touch the
+    arm, so success should track v2 -- confirm grasp-window vision-blind fraction rises while
+    transit/place visibility and success are preserved. filter off to keep frames for the audit."""
+
+    filter_for_successful_trajectories: bool = False
+    camera_config: FrankaSkinHybridCameraSystemExoBlind = FrankaSkinHybridCameraSystemExoBlind()
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=FridgePickAndPlaceTaskSamplerV2,
+        scene_xml_paths=[_FRIDGE_XML_V2] * 4,
+        house_inds=list(range(4)),
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=3,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        episodes_per_receptacle=0,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_v2_exoblind_smoke"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp_v2_exoblind_smoke"
+
+
+@register_config("FridgeTwoLevelPnPV2Config")
+class FridgeTwoLevelPnPV2Config(FridgeTwoLevelPnPV2SmokeConfig):
+    """Full v2 collection: target roughly 200 successful physical demos."""
+
+    num_workers: int = 8
+    task_sampler_config: PickAndPlaceTaskSamplerConfig = PickAndPlaceTaskSamplerConfig(
+        task_sampler_class=FridgePickAndPlaceTaskSamplerV2,
+        scene_xml_paths=[_FRIDGE_XML_V2] * 200,
+        house_inds=list(range(200)),
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=15,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        episodes_per_receptacle=0,
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_v2"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp_v2"
+
+
+@register_config("FridgeTwoLevelPnPV2ExoBlindConfig")
+class FridgeTwoLevelPnPV2ExoBlindConfig(FridgeTwoLevelPnPV2Config):
+    """Full exo-blind collection (~200 houses): physically valid v2 scene, exo repositioned
+    low/side so the arm is ~50% vision-blind at pregrasp (proximity-necessity regime). Inherits
+    v2's 200-house setup + filter_for_successful_trajectories=True; only the exo camera moves.
+    This is the dataset for the PACT vs ACT study."""
+
+    num_workers: int = 12
+    camera_config: FrankaSkinHybridCameraSystemExoBlind = FrankaSkinHybridCameraSystemExoBlind()
+    output_dir: Path = ASSETS_DIR / "datagen" / "fridge_two_level_v2_exoblind"
+
+    @property
+    def tag(self) -> str:
+        return "fridge_two_level_pnp_v2_exoblind"
 
 
 @register_config("FrankaSkinClutterReachSmokeConfig")

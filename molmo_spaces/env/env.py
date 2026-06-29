@@ -827,15 +827,16 @@ class CPUMujocoEnv(BaseMujocoEnv):
 
         return collision_found
 
-    def count_robot_environment_contacts(self, robot_namespace: str = "robot_0/") -> int:
-        """Count active contacts between the robot and the (non-floor) environment.
+    def get_robot_environment_contact_details(
+        self, robot_namespace: str = "robot_0/"
+    ) -> list[dict[str, str | float]]:
+        """Return active contacts between the robot and the non-floor environment.
 
         This is the per-step "collision metric". It mirrors the root-body logic of
         ``check_robot_collision_in_current_pose`` but, instead of short-circuiting on
-        the first hit, it counts every penetrating contact (``dist <= 0``) in which
+        the first hit, it records every penetrating contact (``dist <= 0``) in which
         exactly one side is a robot body and the other side is neither the robot
-        (self-collision) nor the floor. Contacts with the manipulated object are
-        included (they are part of the environment).
+        (self-collision) nor the floor.
 
         Works regardless of whether the placement collision check is disabled, because
         MuJoCo contact detection is independent of the task-sampler guard.
@@ -844,12 +845,14 @@ class CPUMujocoEnv(BaseMujocoEnv):
         data = self.current_data
         contacts = data.contact
 
-        n_contacts = 0
+        contact_details: list[dict[str, str | float]] = []
         for i in range(data.ncon):
             contact = contacts[i]
             if contact.dist > 0:  # Only count actual (penetrating) contacts
                 continue
 
+            body1_id = model.geom_bodyid[contact.geom1]
+            body2_id = model.geom_bodyid[contact.geom2]
             root1_id = model.body_rootid[model.geom_bodyid[contact.geom1]]
             root2_id = model.body_rootid[model.geom_bodyid[contact.geom2]]
             name1 = model.body(root1_id).name
@@ -865,9 +868,23 @@ class CPUMujocoEnv(BaseMujocoEnv):
             if "floor" in other_body_name.lower():
                 continue
 
-            n_contacts += 1
+            contact_details.append(
+                {
+                    "robot_body": name1 if robot1 else name2,
+                    "other_body": other_body_name,
+                    "robot_geom": model.geom(contact.geom1).name if robot1 else model.geom(contact.geom2).name,
+                    "other_geom": model.geom(contact.geom2).name if robot1 else model.geom(contact.geom1).name,
+                    "robot_actual_body": model.body(body1_id).name if robot1 else model.body(body2_id).name,
+                    "other_actual_body": model.body(body2_id).name if robot1 else model.body(body1_id).name,
+                    "dist": float(contact.dist),
+                }
+            )
 
-        return n_contacts
+        return contact_details
+
+    def count_robot_environment_contacts(self, robot_namespace: str = "robot_0/") -> int:
+        """Count active contacts between the robot and the non-floor environment."""
+        return len(self.get_robot_environment_contact_details(robot_namespace))
 
     def get_thormap(
         self, agent_radius: float = 0.35, px_per_m: int = 200

@@ -11,6 +11,13 @@ import logging
 import numpy as np
 import mujoco
 from mujoco import MjSpec, MjModel, MjData
+
+# mujoco_warp 3.5 imports this enum value, but MuJoCo 3.10 removed it.
+# The bit is only used for masking enable flags, so aliasing it to 0 keeps import-time
+# compatibility without changing any active MuJoCo option.
+if not hasattr(mujoco.mjtEnableBit, "mjENBL_MULTICCD"):
+    setattr(mujoco.mjtEnableBit, "mjENBL_MULTICCD", 0)
+
 import mujoco_warp as mjw
 import warp as wp
 

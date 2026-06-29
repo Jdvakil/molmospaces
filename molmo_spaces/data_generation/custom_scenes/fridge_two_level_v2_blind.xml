@@ -1,0 +1,42 @@
+<mujoco model="fridge_two_level_v2_blind">
+  <compiler angle="radian" autolimits="true" boundmass="0" balanceinertia="true"/>
+  <option impratio="10" gravity="0 0 -9.8" integrator="implicitfast" cone="elliptic" jacobian="sparse" noslip_iterations="4">
+    <flag multiccd="enable" contact="enable" warmstart="enable"/>
+  </option>
+  <size njmax="5000" nconmax="5000"/>
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+    <map znear="0.001"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.6 0.6 0.6"/>
+  </visual>
+  <default>
+    <default class="cavity_struct">
+      <geom contype="8" conaffinity="15" group="0" friction="0.9 0.9 0.001"
+            solref="0.02 1" solimp="0.998 0.998 0.001" density="800" rgba="0.72 0.75 0.76 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0.5 0.5 3" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.3 0.3 0.34 1"/>
+
+    <body name="fridge" pos="0 0 0">
+      <geom name="cab_floor" class="cavity_struct" type="box" pos="0.57 0 0.38" size="0.29 0.30 0.02"/>
+      <geom name="cab_mid" class="cavity_struct" type="box" pos="0.66 0 0.70" size="0.20 0.30 0.02"/>
+      <geom name="cab_back" class="cavity_struct" type="box" pos="0.86 0 0.705" size="0.02 0.30 0.345"/>
+      <geom name="cab_left" class="cavity_struct" type="box" pos="0.57 0.29 0.705" size="0.29 0.02 0.345"/>
+      <geom name="cab_right" class="cavity_struct" type="box" pos="0.57 -0.29 0.705" size="0.29 0.02 0.345"/>
+      <geom name="cab_lower_lip" class="cavity_struct" type="box" pos="0.28 0 0.42" size="0.02 0.30 0.02"/>
+      <!-- BLIND visor: closes the TOP of the upper compartment's front face (z 0.84-1.05).
+           The exo at (-1.03,-0.58,1.65) -> target (0.65,0,0.77) ray crosses this plane at
+           z~0.87, so this occludes the exo's view of the target. Top-down grasp (x=0.66,
+           behind it) and a low forward-exit gap (z<0.84) stay open. -->
+      <geom name="cab_upper_visor" class="cavity_struct" type="box" pos="0.46 0 0.945" size="0.02 0.29 0.105"/>
+    </body>
+
+    <body name="place_pad" pos="0.37 0 0.41">
+      <geom name="place_pad" type="box" size="0.06 0.06 0.01"
+            rgba="0.2 0.7 0.2 1" contype="8" conaffinity="15" group="0"
+            friction="1.0 0.9 0.001" solref="0.02 1" solimp="0.998 0.998 0.001" density="800"/>
+    </body>
+  </worldbody>
+</mujoco>

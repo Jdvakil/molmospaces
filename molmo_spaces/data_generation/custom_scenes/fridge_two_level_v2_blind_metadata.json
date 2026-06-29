@@ -1,0 +1,15 @@
+{
+  "objects": {
+    "place_pad": {
+      "asset_id": "fridge_two_level_v2_blind_place_pad",
+      "category": "place pad",
+      "object_enum": "temp_object",
+      "is_static": true,
+      "boundingBox": {
+        "x": 0.12,
+        "y": 0.12,
+        "z": 0.02
+      }
+    }
+  }
+}

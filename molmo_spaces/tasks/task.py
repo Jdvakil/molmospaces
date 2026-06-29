@@ -238,6 +238,7 @@ class BaseMujocoTask(ABC):
         self.truncated_cache.append(truncated)
         self.success_cache.append(success)
         self.collision_cache.append(self._last_collision_counts)
+        self.collision_detail_cache.append(self._last_collision_details)
 
         return observation, reward, terminated, truncated, info
 
@@ -260,7 +261,9 @@ class BaseMujocoTask(ABC):
         self.truncated_cache = []
         self.success_cache = []
         self.collision_cache = []
+        self.collision_detail_cache = []
         self._last_collision_counts = [0] * self._env.n_batch
+        self._last_collision_details = []
         self._policy_done = False
         self._done_action_received = False
 
@@ -465,9 +468,13 @@ class BaseMujocoTask(ABC):
         not aborted by metric collection.
         """
         try:
-            count = self._env.count_robot_environment_contacts("robot_0/")
+            self._last_collision_details = self._env.get_robot_environment_contact_details(
+                "robot_0/"
+            )
+            count = len(self._last_collision_details)
         except Exception as e:  # pragma: no cover - defensive, metric must not break rollout
             log.debug(f"collision metric: count_robot_environment_contacts failed: {e}")
+            self._last_collision_details = []
             count = 0
         return [int(count)] * self._env.n_batch
 
@@ -544,13 +551,65 @@ class BaseMujocoTask(ABC):
         per_step = [int(c[0]) for c in self.collision_cache if len(c) > 0]
         n_collision_steps = int(sum(1 for c in per_step if c > 0))
         total_contacts = int(sum(per_step))
+        category_steps = self._summarize_collision_categories()
         return {
             "collided": bool(n_collision_steps > 0),
             "n_collision_steps": n_collision_steps,
             "total_contacts": total_contacts,
             "n_steps": len(per_step),
             "per_step_contacts": per_step,
+            **category_steps,
         }
+
+    def _collision_category(self, other_body_name: str) -> str:
+        task_config = getattr(self.config, "task_config", None)
+        pickup_name = getattr(task_config, "pickup_obj_name", "") if task_config is not None else ""
+        place_name = (
+            getattr(task_config, "place_receptacle_name", "") if task_config is not None else ""
+        )
+
+        if pickup_name and (
+            other_body_name == pickup_name
+            or other_body_name.startswith(pickup_name)
+            or (
+                "/" in pickup_name
+                and other_body_name.startswith(pickup_name.split("/", maxsplit=1)[0] + "/")
+            )
+        ):
+            return "pickup_object"
+        if place_name and place_name in other_body_name:
+            return "place_receptacle"
+        return "static_environment"
+
+    def _summarize_collision_categories(self) -> dict[str, Any]:
+        category_names = ("static_environment", "pickup_object", "place_receptacle")
+        per_category = {name: [] for name in category_names}
+        other_body_names: set[str] = set()
+        other_geom_names: set[str] = set()
+
+        for step_details in getattr(self, "collision_detail_cache", []):
+            counts = {name: 0 for name in category_names}
+            for contact in step_details:
+                other_body = str(contact.get("other_body", ""))
+                other_geom = str(contact.get("other_geom", ""))
+                category = self._collision_category(other_body)
+                counts[category] += 1
+                if len(other_body_names) < 32:
+                    other_body_names.add(other_body)
+                if len(other_geom_names) < 32:
+                    other_geom_names.add(other_geom)
+            for category in category_names:
+                per_category[category].append(int(counts[category]))
+
+        summary: dict[str, Any] = {
+            "contact_other_bodies_sample": sorted(other_body_names),
+            "contact_other_geoms_sample": sorted(other_geom_names),
+        }
+        for category, per_step in per_category.items():
+            summary[f"{category}_total_contacts"] = int(sum(per_step))
+            summary[f"{category}_collision_steps"] = int(sum(1 for c in per_step if c > 0))
+            summary[f"{category}_per_step_contacts"] = per_step
+        return summary
 
     def close(self):
         # Clear any MlSpacesObject references

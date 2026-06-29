@@ -221,6 +221,7 @@ class TCPMoveSequence(MoveSequence):
         self.tcp_to_jp_fn = tcp_to_jp_fn
         self.tcp_pos_err_threshold = tcp_pos_err_threshold
         self.tcp_rot_err_threshold = tcp_rot_err_threshold
+        self._logged_tcp_failure = False
 
     @property
     def move_segments(self) -> list[TCPMoveSegment]:
@@ -263,7 +264,18 @@ class TCPMoveSequence(MoveSequence):
         trf = np.linalg.inv(gripper.leaf_frame_to_world) @ curr_target_pose
         pos_err = np.linalg.norm(trf[:3, 3])
         rot_err = R.from_matrix(trf[:3, :3]).magnitude()
-        return pos_err > self.tcp_pos_err_threshold or rot_err > self.tcp_rot_err_threshold
+        failed = pos_err > self.tcp_pos_err_threshold or rot_err > self.tcp_rot_err_threshold
+        if failed and not self._logged_tcp_failure:
+            log.info(
+                "TCP tracking failure in %s: pos_err=%.4f/%.4f rot_err=%.3f/%.3f",
+                self.get_current_phase(),
+                pos_err,
+                self.tcp_pos_err_threshold,
+                rot_err,
+                self.tcp_rot_err_threshold,
+            )
+            self._logged_tcp_failure = True
+        return failed
 
 
 class JointMoveSequence(MoveSequence):

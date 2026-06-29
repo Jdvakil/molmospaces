@@ -501,6 +501,37 @@ class FrankaSkinHybridCameraSystem(FrankaSkinCameraSystem):
     ]
 
 
+class FrankaSkinHybridCameraSystemExoBlind(FrankaSkinHybridCameraSystem):
+    """Hybrid 40-sensor skin, but the exo is repositioned LOW + to the SIDE so the fridge side
+    wall occludes its view of the target during the in-compartment grasp, while it still sees
+    the lifted object during transit/place. Same wrist + 40 skin sensors. Used for the fridge
+    proximity-necessity study (remove the exo's always-on view of the deep target)."""
+
+    cameras: list[AllCameraTypes] = [
+        MjcfCameraConfig(
+            name="wrist_camera",
+            mjcf_name="gripper/wrist_camera",
+            robot_namespace="robot_0/",
+            fov=56.74,
+            record_depth=True,
+        ),
+        RobotMountedCameraConfig(
+            name="exo_camera_1",
+            reference_body_names=["robot_0/fr3_link0"],
+            # low + hard to the side: line to the deep target (0.66,0,0.77) crosses the y=-0.29
+            # side wall (-> occluded at grasp); line to the front pad / lifted object stays clear.
+            camera_offset=[-0.10, -0.95, 0.20],
+            camera_quaternion=None,
+            lookat_offset=[0.47, 0.05, 0.10],
+            up_axis="z",
+            fov=70.0,
+            record_depth=True,
+            visibility_constraints={"__task_objects__": 0.001},
+        ),
+        *_hybrid_skin_sensor_camera_specs(),
+    ]
+
+
 class FrankaEasyRandomizedDroidCameraSystem(CameraSystemConfig):
     """Camera system for Franka DROID system with wrist cam (ZED mini) and 2 randomized exo cams (ZED 2/ZED 2i).
 

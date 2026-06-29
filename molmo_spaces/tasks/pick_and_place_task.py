@@ -1,4 +1,5 @@
 from typing import Any
+import logging
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -12,6 +13,8 @@ from molmo_spaces.utils.mj_model_and_data_utils import body_aabb
 from molmo_spaces.utils.mujoco_scene_utils import is_object_supported_by_body
 from molmo_spaces.utils.pose import pos_quat_to_pose_mat
 
+log = logging.getLogger(__name__)
+
 
 class PickAndPlaceTask(BaseMujocoTask):
     """Franka pick-and-place task implementation."""
@@ -19,6 +22,7 @@ class PickAndPlaceTask(BaseMujocoTask):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._supported_rel_poses: dict[int, list[np.ndarray]] = {}
+        self._last_fridge_diag_step: int = -1
 
     def get_task_description(self) -> str:
         pickup_name = self.config.task_config.referral_expressions["pickup_name"]
@@ -197,6 +201,30 @@ class PickAndPlaceTask(BaseMujocoTask):
                 <= task_config.max_place_receptacle_pos_displacement
                 and tilt_displacement <= task_config.max_place_receptacle_rot_displacement
             )
+
+            if (
+                not success
+                and task_config.place_receptacle_name == "place_pad"
+                and self.episode_step_count >= 180
+                and self.episode_step_count - self._last_fridge_diag_step >= 25
+            ):
+                self._last_fridge_diag_step = self.episode_step_count
+                log.info(
+                    "[FridgePnP success diag] step=%s supported=%s carry=%s "
+                    "robot_contact=%s pos_err=%.4f pickup_pos=%s pickup_aabb_min=%s "
+                    "pickup_aabb_max=%s receptacle_center=%s receptacle_disp=%.4f tilt=%.3f",
+                    self.episode_step_count,
+                    supported_by_receptacle,
+                    carried_forward,
+                    robot_contact,
+                    pos_err,
+                    np.round(pickup_obj.position, 4),
+                    np.round(pickup_obj_aabb_min, 4),
+                    np.round(pickup_obj_aabb_max, 4),
+                    np.round(place_receptacle_aabb_center, 4),
+                    np.linalg.norm(pos_displacement),
+                    tilt_displacement,
+                )
 
             metrics.append(
                 {

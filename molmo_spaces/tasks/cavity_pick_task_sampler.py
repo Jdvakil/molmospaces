@@ -24,6 +24,8 @@ from mujoco import MjSpec, mjtJoint
 from scipy.spatial.transform import Rotation as R
 
 from molmo_spaces.env.env import CPUMujocoEnv
+from molmo_spaces.molmo_spaces_constants import ASSETS_DIR
+from molmo_spaces.tasks.pick_and_place_task_sampler import PickAndPlaceTaskSampler
 from molmo_spaces.tasks.pick_task_sampler import PickTaskSampler
 from molmo_spaces.utils.constants.simulation_constants import OBJAVERSE_FREE_JOINT_DEFAULT_DAMPING
 from molmo_spaces.utils.lazy_loading_utils import install_uid
@@ -85,7 +87,7 @@ class CavityPickTaskSampler(PickTaskSampler):
 
     # target categories to skip entirely (e.g. eggs slip out of the gripper at lift and
     # burn the whole per-house attempt budget — observed repeatedly with Egg_4)
-    EXCLUDED_TARGET_CATEGORIES: tuple[str, ...] = ()
+    EXCLUDED_TARGET_CATEGORIES: tuple[str, ...] = ("candle", "egg")
 
     def _build_grasp_uid_pool(self, n: int) -> list[str]:
         from molmo_spaces.utils.grasp_sample import has_grasp_folder, has_valid_grasp_file
@@ -124,7 +126,7 @@ class CavityPickTaskSampler(PickTaskSampler):
         z_half = float(bbox.get("z", 0.06)) / 2 + 0.01
         ox, oy, floor_z = self._obj_rest()
         pos = [ox, oy, floor_z + z_half]
-        quat = R.from_euler("x", 90, degrees=True).as_quat(scalar_first=True)
+        quat = np.array([1.0, 0.0, 0.0, 0.0])
         ns = "cavity_obj_0/"
         orig = pbody.name
         spec.worldbody.add_frame(pos=pos, quat=quat).attach_body(pbody, ns, "")
@@ -242,10 +244,262 @@ class ShelfReachPickTaskSampler(CavityPickTaskSampler):
 
     # Object rests at a comfortably-reachable depth in the shelf (deep enough that the whole arm
     # is inside -> all 29 sensors active, but within the arm's dexterous range so IK succeeds).
-    OBJ_XY = (0.60, 0.0)
+    OBJ_XY = (0.50, 0.0)
     OBJ_FLOOR_Z = 0.44
     OBJ_JIT_XY = (0.06, 0.08)
     POOL_SIZE = 24
+
+
+class FridgePickAndPlaceTaskSampler(PickAndPlaceTaskSampler):
+    """Deep two-level fridge pick-and-place: pick from upper shelf, place on lower pad."""
+
+    CAVITY_CENTER = (0.60, 0.0, 0.96)
+    CAVITY_INTERIOR = (0.24, 0.27, 0.16)
+    BASE_XYZ = (0.10, 0.0, 0.0)
+    BASE_QUAT = (1.0, 0.0, 0.0, 0.0)
+    OBJ_XY = (0.45, 0.0)
+    OBJ_FLOOR_Z = 0.83
+    OBJ_JIT_XY = (0.02, 0.04)
+    PLACE_PAD_NAME = "place_pad"
+    PLACE_PAD_BBOX = {"x": 0.24, "y": 0.24, "z": 0.04}
+    POOL_SIZE = 24
+    MAX_OBJ_DIM = 0.16
+    MIN_OBJ_DIM = 0.03
+    MIN_FLATNESS = 0.30
+    MAX_GRIPPER_SPAN_DIM = 0.085
+    MAX_COMPILED_MASS = 0.6
+    MIN_GRASP_COUNT = 100
+    PREFERRED_TARGET_PREFIXES = (
+        "Watch",
+        "Apple",
+        "RoboTHOR_apple_ai2",
+        "RoboTHOR_salt_pepper_shaker",
+        "Salt_Shaker",
+        "Pepper_Shaker",
+        "Potato",
+        "Mug",
+        "RoboTHOR_mug",
+        "RoboTHOR_alarm_clock",
+        "Tomato",
+        "Cup",
+    )
+    EXCLUDED_TARGET_CATEGORIES: tuple[str, ...] = ("candle", "egg")
+    EXCLUDED_TARGET_UIDS: tuple[str, ...] = ("Watch_1",)
+
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self._injected_obj_name: str | None = None
+        self._cur_base_xyz = self.BASE_XYZ
+        self._cur_base_yaw = 0.0
+        self.place_receptacle_name = self.PLACE_PAD_NAME
+        self._receptacle_names = [self.PLACE_PAD_NAME]
+        self._uid_pool = self._build_grasp_uid_pool(self.POOL_SIZE)
+        log.info(f"[FridgePnP] grasp-validated UID pool ({len(self._uid_pool)}): {self._uid_pool}")
+
+    def _obj_rest(self):
+        x, y = self.OBJ_XY
+        return x, y, self.OBJ_FLOOR_Z
+
+    def _passes_shape_filter(self, uid: str) -> bool:
+        if not CavityPickTaskSampler._passes_shape_filter(self, uid):
+            return False
+        anno = ObjectMeta.annotation(uid) or {}
+        bbox = anno.get("boundingBox", {})
+        dims = sorted(float(bbox.get(k, 0.0)) for k in "xyz")
+        if dims[2] <= 0:
+            return True
+        return dims[1] <= self.MAX_GRIPPER_SPAN_DIM
+
+    def _grasp_count(self, uid: str) -> int:
+        grasp_files = (
+            ASSETS_DIR / f"grasps/droid/{uid}/{uid}_grasps_filtered.npz",
+            ASSETS_DIR / f"grasps/droid_objaverse/{uid}/{uid}_grasps_filtered.npz",
+        )
+        for grasp_file in grasp_files:
+            if not grasp_file.exists():
+                continue
+            try:
+                npz_data = np.load(grasp_file)
+                return len(npz_data.get("transforms", []))
+            except Exception:
+                return 0
+        return 0
+
+    def _target_prefix_rank(self, uid: str) -> int:
+        return next(
+            (i for i, prefix in enumerate(self.PREFERRED_TARGET_PREFIXES) if uid.startswith(prefix)),
+            len(self.PREFERRED_TARGET_PREFIXES),
+        )
+
+    def _compiled_mass(self, uid: str) -> float:
+        import mujoco
+
+        try:
+            model = mujoco.MjModel.from_xml_path(str(install_uid(uid)))
+            return float(model.body_mass.sum())
+        except Exception:
+            return float("inf")
+
+    def _build_grasp_uid_pool(self, n: int) -> list[str]:
+        from molmo_spaces.utils.grasp_sample import has_grasp_folder, has_valid_grasp_file
+
+        ranked: list[tuple[int, float, int, str]] = []
+        for uid in get_valid_pickupable_obja_uids():
+            try:
+                if uid in self.EXCLUDED_TARGET_UIDS:
+                    continue
+                if not self._passes_shape_filter(uid):
+                    continue
+                cat = str((ObjectMeta.annotation(uid) or {}).get("category", "")).lower()
+                if any(x in cat or x in uid.lower() for x in self.EXCLUDED_TARGET_CATEGORIES):
+                    continue
+                grasp_count = self._grasp_count(uid)
+                if (
+                    grasp_count < self.MIN_GRASP_COUNT
+                    or not has_grasp_folder(uid)
+                    or not has_valid_grasp_file(uid, min_grasps=self.MIN_GRASP_COUNT)
+                ):
+                    continue
+                mass = self._compiled_mass(uid)
+                if mass > self.MAX_COMPILED_MASS:
+                    continue
+                ranked.append((self._target_prefix_rank(uid), mass, -grasp_count, uid))
+            except Exception:
+                continue
+
+        ranked.sort()
+        pool = [uid for _, _, _, uid in ranked[:n]]
+        if not pool:
+            raise RuntimeError("[FridgePnP] no liftable grasp-validated objects found")
+        return pool
+
+    def add_auxiliary_objects(self, spec: MjSpec) -> None:
+        PickTaskSampler.add_auxiliary_objects(self, spec)
+        uid = self._uid_pool[self.current_house_index % len(self._uid_pool)]
+        pickup_xml = install_uid(uid)
+        pspec = MjSpec.from_file(str(pickup_xml))
+        pbody = pspec.worldbody.bodies[0]
+        if not pbody.first_joint():
+            pbody.add_joint(name=f"{uid}_jntfree", type=mjtJoint.mjJNT_FREE,
+                            damping=OBJAVERSE_FREE_JOINT_DEFAULT_DAMPING)
+        anno = ObjectMeta.annotation(uid) or {}
+        bbox = anno.get("boundingBox", {})
+        z_half = float(bbox.get("z", 0.06)) / 2 + 0.01
+        ox, oy, floor_z = self._obj_rest()
+        pos = [ox, oy, floor_z + z_half]
+        quat = np.array([1.0, 0.0, 0.0, 0.0])
+        ns = "fridge_obj_0/"
+        orig = pbody.name
+        spec.worldbody.add_frame(pos=pos, quat=quat).attach_body(pbody, ns, "")
+        self._injected_obj_name = ns + orig
+        self.place_receptacle_name = self.PLACE_PAD_NAME
+        self._receptacle_names = [self.PLACE_PAD_NAME]
+        self._metadata_adder.update({
+            self._injected_obj_name: {
+                "asset_id": uid,
+                "category": anno.get("category", "object"),
+                "object_enum": "temp_object",
+                "is_static": False,
+                "boundingBox": bbox,
+            },
+            self.PLACE_PAD_NAME: {
+                "asset_id": "fridge_two_level_place_pad",
+                "category": "place pad",
+                "object_enum": "temp_object",
+                "is_static": True,
+                "boundingBox": self.PLACE_PAD_BBOX,
+            },
+        })
+        log.info(f"[FridgePnP] injected '{self._injected_obj_name}' (uid={uid}) at {np.round(pos,3)}")
+
+    def _settle_injected_object(self, env: CPUMujocoEnv) -> None:
+        CavityPickTaskSampler._settle_injected_object(self, env)
+
+    def _sample_task(self, env: CPUMujocoEnv):
+        self._cur_base_xyz = (
+            self.BASE_XYZ[0] + float(np.random.uniform(-0.01, 0.01)),
+            self.BASE_XYZ[1] + float(np.random.uniform(-0.02, 0.02)),
+            self.BASE_XYZ[2],
+        )
+        self._cur_base_yaw = float(np.random.uniform(-0.05, 0.05))
+        self.place_receptacle_name = self.PLACE_PAD_NAME
+        self._settle_injected_object(env)
+        self.candidate_objects = self._get_scene_objects(env)
+        return super()._sample_task(env)
+
+    def _get_scene_objects(self, env: CPUMujocoEnv, mass_limit=100):
+        return CavityPickTaskSampler._get_scene_objects(self, env, mass_limit=mass_limit)
+
+    def _get_dataset_index_map(self) -> dict:
+        return CavityPickTaskSampler._get_dataset_index_map(self)
+
+    def _sample_and_place_robot(self, env: CPUMujocoEnv) -> None:
+        import mujoco
+        task_cfg = self.config.task_config
+        om = env.object_managers[env.current_batch_index]
+        pickup_obj = om.get_object_by_name(task_cfg.pickup_obj_name)
+        task_cfg.pickup_obj_start_pose = pose_mat_to_7d(pickup_obj.pose).tolist()
+
+        robot_view = env.current_robot.robot_view
+        base_quat = R.from_euler("z", self._cur_base_yaw).as_quat(scalar_first=True)
+        robot_view.base.pose = pos_quat_to_pose_mat(
+            np.array(self._cur_base_xyz, dtype=float), np.array(base_quat, dtype=float)
+        )
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+        task_cfg.robot_base_pose = pose_mat_to_7d(robot_view.base.pose).tolist()
+        task_cfg.place_receptacle_name = self.PLACE_PAD_NAME
+        task_cfg.place_target_name = self.PLACE_PAD_NAME
+        log.info(
+            f"[FridgePnP] base set to {np.round(self._cur_base_xyz,3)}; "
+            f"pick '{task_cfg.pickup_obj_name}' -> place '{self.PLACE_PAD_NAME}'"
+        )
+
+    def _get_place_target_candidates(
+        self,
+        env: CPUMujocoEnv,
+        pickup_obj_name: str,
+        supporting_geom_id: int,
+    ) -> list[str]:
+        self.place_receptacle_name = self.PLACE_PAD_NAME
+        return [self.PLACE_PAD_NAME]
+
+    def _prepare_place_target(
+        self,
+        env: CPUMujocoEnv,
+        place_target_name: str,
+        pickup_obj_name: str,
+        pickup_obj_pos: np.ndarray,
+        supporting_geom_id: int,
+    ) -> bool:
+        self.place_receptacle_name = self.PLACE_PAD_NAME
+        om = env.object_managers[env.current_batch_index]
+        return om.get_object_by_name(self.PLACE_PAD_NAME) is not None
+
+    def _generate_referral_expressions(
+        self, env: CPUMujocoEnv, object_name: str, context_objects: list
+    ) -> tuple[list, list]:
+        if object_name == self.PLACE_PAD_NAME:
+            priority = [(1.0, 1.0, "green place pad")]
+            return priority, priority
+        return super()._generate_referral_expressions(env, object_name, context_objects)
+
+
+class FridgePickAndPlaceTaskSamplerV2(FridgePickAndPlaceTaskSampler):
+    """v2 fridge geometry: deep upper pick with an open-top lift and a sky-open lower pad."""
+
+    CAVITY_CENTER = (0.66, 0.0, 0.885)
+    CAVITY_INTERIOR = (0.20, 0.27, 0.165)
+    BASE_XYZ = (0.0, 0.0, 0.0)
+    OBJ_XY = (0.66, 0.0)
+    OBJ_FLOOR_Z = 0.72
+    OBJ_JIT_XY = (0.03, 0.05)
+    PLACE_PAD_BBOX = {"x": 0.12, "y": 0.12, "z": 0.02}
+    EXCLUDED_TARGET_CATEGORIES = FridgePickAndPlaceTaskSampler.EXCLUDED_TARGET_CATEGORIES + ("watch",)
+    EXCLUDED_TARGET_UIDS = FridgePickAndPlaceTaskSampler.EXCLUDED_TARGET_UIDS + (
+        "Apple_19",
+        "Apple_17",
+    )
 
 
 class RealTablePickTaskSampler(CavityPickTaskSampler):
