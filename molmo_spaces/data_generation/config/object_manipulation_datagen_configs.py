@@ -2247,3 +2247,67 @@ class FrankaSkinHybridObstacleConfig(FrankaSkinHybridObstacleCheckConfig):
     @property
     def tag(self) -> str:
         return "franka_skin_hybrid_obstacle_v1"
+
+
+# --------------------------------------------------------------------------------------- #
+# MANIFEST-DRIVEN collection (hybrid_obstacle_independent_v2).
+#
+# Inherits the 40-sensor hybrid obstacle environment, robot, cameras, planner and task
+# semantics from FrankaSkinHybridObstacleConfig unchanged. The differences are entirely in
+# how episodes are IDENTIFIED and SEEDED:
+#
+#   * work is a committed 160-row candidate manifest, not eight wraparound house aliases;
+#   * hazard presence comes from the row, so OBSTACLE_P is never drawn at runtime here
+#     (it remains the documented design probability: 120/160 == 0.75, and every legacy
+#     config keeps its Bernoulli);
+#   * one scene-template identity, one house index (1), so no alias can leak into content;
+#   * the two robot_object_z_offset scalars are PINNED. On the legacy configs they are
+#     np.random.uniform(...) evaluated at module import time, before any seeding, and so
+#     differ between the parent and each spawned worker.
+#
+# Run it through scripts/run_hybrid_obstacle_manifest_v2.py, which drives
+# ManifestRolloutRunner. ParallelRolloutRunner's default behavior is untouched.
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinHybridObstacleManifestV2Config")
+class FrankaSkinHybridObstacleManifestV2Config(FrankaSkinHybridObstacleConfig):
+    """Manifest-driven, worker-count- and resume-invariant hybrid obstacle collection."""
+
+    # Populated by the launcher; the runner refuses to start without a manifest.
+    manifest_path: str | None = None
+    smoke_subset_path: str | None = None
+    run_id: str | None = None
+
+    # Contract hashes the runner cross-checks against every row before executing.
+    expected_sensor_order_sha256: str | None = None
+    expected_env_config_sha256: str | None = None
+    expected_runtime_contract_sha256: str | None = None
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ObstacleFumehoodPickSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 2,
+        # ONE scene-template identity. No wraparound aliases: the alias existed only to
+        # parallelise a house-oriented runner, and the manifest runner parallelises rows.
+        house_inds=[1],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        # PINNED (see above). Values are the midpoint of the legacy draw range, chosen
+        # before any simulation result was observed, and folded into env_config_sha256.
+        robot_object_z_offset_random_min=-0.5,
+        robot_object_z_offset_random_max=0.5,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=False,
+    )
+    num_workers: int = 1
+    filter_for_successful_trajectories: bool = False
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_obstacle_manifest_v2"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_obstacle_manifest_v2"

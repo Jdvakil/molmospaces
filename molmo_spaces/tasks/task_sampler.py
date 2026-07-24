@@ -309,6 +309,10 @@ class BaseMujocoTaskSampler:
             self.config.task_sampler_config, "max_asset_failures", DEFAULT_MAX_ASSET_FAILURES
         )
 
+        # Episode-scoped randomizer base seed. None => legacy behavior (derive
+        # from current_seed). The manifest runner sets it per candidate row.
+        self._randomizer_base_seed_override: int | None = None
+
         # Seed task sampling once at initialization
         # If no seed provided, generate a random one
         seed = self.config.seed if self.config.seed is not None else np.random.randint(0, 100000000)
@@ -823,10 +827,23 @@ class BaseMujocoTaskSampler:
             or self.config.task_sampler_config.randomize_textures
             or self.config.task_sampler_config.randomize_dynamics
         ):
+            # Episode-scoped override (hybrid_obstacle_independent_v2). These
+            # randomizers own independent RandomState objects that are built once
+            # per scene load and would otherwise advance across episodes, making
+            # an episode's content a function of the episodes previously run by
+            # the same worker. When a manifest row is active its camera/lighting
+            # stream supplies the base seed instead, so a row built on a fresh
+            # scene and a row built on a cached scene derive identical states.
+            # Unset (None) everywhere else: legacy behavior is untouched.
+            override = getattr(self, "_randomizer_base_seed_override", None)
             base_seed = (
-                self.current_seed + 1
-                if self.current_seed is not None
-                else np.random.randint(0, 100000000)
+                override
+                if override is not None
+                else (
+                    self.current_seed + 1
+                    if self.current_seed is not None
+                    else np.random.randint(0, 100000000)
+                )
             )
 
         # Create separate RandomState instances for each randomizer

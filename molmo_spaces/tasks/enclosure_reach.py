@@ -1127,11 +1127,41 @@ class ObstacleFumehoodPickSampler(BigFumehoodPickSampler):
     # close without one — both modes appear in the ACT data.
     OBJ_GAP = (0.12, 0.20)
 
+    # Manifest override (hybrid_obstacle_independent_v2). None means legacy: the
+    # runtime Bernoulli below is drawn exactly as it always was. Only the
+    # manifest runner ever sets this, and only for the manifest config, so every
+    # legacy obstacle config keeps its OBSTACLE_P behavior byte for byte.
+    _forced_hazard_present: bool | None = None
+    _manifest_row: dict | None = None
+
+    def set_manifest_row(self, row: dict, retry_index: int = 0) -> None:
+        """Pin this episode's hazard assignment to a committed manifest row.
+
+        Hazard presence then comes only from ``row['hazard_present']`` and the
+        runtime Bernoulli is bypassed, so it can no longer depend on how many
+        draws the worker has already consumed.
+        """
+        if "hazard_present" not in row:
+            raise ValueError("manifest row is missing 'hazard_present'")
+        self._manifest_row = row
+        self._forced_hazard_present = bool(row["hazard_present"])
+        self._manifest_retry_index = int(retry_index)
+
+    def clear_manifest_row(self) -> None:
+        """Restore legacy Bernoulli behavior."""
+        self._manifest_row = None
+        self._forced_hazard_present = None
+
+    def _hazard_present_for_episode(self) -> bool:
+        if self._forced_hazard_present is None:
+            return bool(np.random.random() < self.OBSTACLE_P)
+        return self._forced_hazard_present
+
     def _draw_theta(self):
         th = super()._draw_theta()   # Big's clean-pick draws (protrusion forced off)
         # near-constant lighting: one-env ACT data should not fight 10x brightness swings
         th["light_scale"] = float(np.random.uniform(0.75, 1.10))
-        if np.random.random() < self.OBSTACLE_P:
+        if self._hazard_present_for_episode():
             # cell name outside hidden/visible skips _sample_task's raycast rejection
             # loop (which would redraw the coupled placement fields drawn here)
             th["cell"] = "bar"
