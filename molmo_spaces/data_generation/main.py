@@ -4,6 +4,7 @@ import glob
 import importlib
 import os
 
+from molmo_spaces.data_generation.runtime_compat import assert_supported_runtime
 from molmo_spaces.data_generation.config_registry import get_config_class
 from molmo_spaces.data_generation.pipeline import ParallelRolloutRunner
 
@@ -75,6 +76,9 @@ def auto_import_configs() -> None:
 
 
 def main() -> None:
+    # Fail fast on a runtime the collection is known not to work on, rather than
+    # letting an incompatible Warp silently reject every rollout.
+    assert_supported_runtime()
     args = get_args()
     exp_config_cls = args.exp_config_cls
 

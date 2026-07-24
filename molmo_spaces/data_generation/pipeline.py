@@ -17,9 +17,19 @@ import mujoco
 # import mujoco.viewer
 import psutil
 import torch
-
 import wandb
+
 from molmo_spaces.configs.abstract_exp_config import MlSpacesExpConfig
+from molmo_spaces.data_generation.worker_completeness import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_SHUTDOWN,
+    WorkerCompletenessError,
+    WorkerRegistry,
+    WorkerReport,
+    build_final_summary,
+    write_summary_atomically,
+)
 from molmo_spaces.molmo_spaces_constants import get_scenes
 from molmo_spaces.policy.base_policy import BasePolicy
 from molmo_spaces.tasks.task import BaseMujocoTask
@@ -352,6 +362,7 @@ def house_processing_worker(
     preloaded_policy: BasePolicy | None = None,
     filter_for_successful_trajectories: bool = False,
     runner_class=None,
+    worker_reports=None,
 ):
     """
     Standalone worker function that processes houses sequentially from a shared counter.
@@ -390,6 +401,16 @@ def house_processing_worker(
     # Track sequential irrecoverable failures at worker level
     num_sequential_irrecoverable_failures = 0
 
+    # Fail-loud completion contract: this worker must publish a terminal record
+    # whatever happens, so the parent can tell "finished" from "vanished".
+    worker_status = STATUS_FAILED
+    worker_error: str | None = None
+    houses_assigned: list[int] = []
+    houses_written: list[int] = []
+    episodes_attempted = 0
+    episodes_written = 0
+    episodes_successful = 0
+
     # Normal datagen: create task sampler once for this worker (persists across all houses)
     # This allows the worker to track object diversity and other state across houses
     task_sampler = exp_config.task_sampler_config.task_sampler_class(exp_config)
@@ -415,6 +436,7 @@ def house_processing_worker(
                     current_house_id = house_indices[house_idx]
                     house_counter.value += 1
 
+                houses_assigned.append(current_house_id)
                 worker_logger.info(
                     f"Worker {worker_id} starting house {current_house_id} (index {house_idx}/{len(house_indices)})"
                 )
@@ -437,6 +459,12 @@ def house_processing_worker(
                         datagen_profiler=datagen_profiler,
                     )
                 )
+
+                episodes_attempted += house_total_count
+                episodes_successful += house_success_count
+                if house_total_count > 0:
+                    houses_written.append(current_house_id)
+                    episodes_written += house_total_count
 
                 # Update global counters
                 with counter_lock:
@@ -463,11 +491,37 @@ def house_processing_worker(
                     # Reset counter on success
                     num_sequential_irrecoverable_failures = 0
 
+            worker_status = (
+                STATUS_SHUTDOWN if shutdown_event.is_set() else STATUS_COMPLETED
+            )
             worker_logger.info(f"Worker {worker_id} completed processing assigned houses")
+        except BaseException as exc:  # noqa: BLE001 - must still publish a record
+            worker_status = STATUS_FAILED
+            worker_error = f"{type(exc).__name__}: {exc}"
+            worker_logger.error(
+                f"Worker {worker_id} terminating on {worker_error}\n{traceback.format_exc()}"
+            )
+            raise
         finally:
             # Log final profiling summary for this worker
             if datagen_profiler is not None:
                 datagen_profiler.log_worker_summary()
+            if worker_reports is not None:
+                try:
+                    worker_reports[worker_id] = WorkerReport(
+                        worker_id=worker_id,
+                        status=worker_status,
+                        houses_assigned=houses_assigned,
+                        houses_written=houses_written,
+                        episodes_attempted=episodes_attempted,
+                        episodes_written=episodes_written,
+                        episodes_successful=episodes_successful,
+                        error=worker_error,
+                    ).to_dict()
+                except Exception as report_exc:  # pragma: no cover - diagnostic only
+                    worker_logger.error(
+                        f"Worker {worker_id} could not publish its final status: {report_exc}"
+                    )
 
             # Clean up task sampler at end of worker lifecycle
             if task_sampler is not None:
@@ -556,6 +610,9 @@ class ParallelRolloutRunner:
         self.total_count = mp_context.Value("i", 0)
         self.completed_houses = mp_context.Value("i", 0)
         self.skipped_houses = mp_context.Value("i", 0)
+        # Terminal records published by each worker; keyed by worker id.
+        self._worker_report_manager = mp_context.Manager()
+        self.worker_reports = self._worker_report_manager.dict()
 
         # SIGTERM handling (only register in main thread)
         # Signal handlers can only be registered in the main thread of the main interpreter
@@ -1222,6 +1279,10 @@ class ParallelRolloutRunner:
         # Start timing for WandB metrics
         start_time = time.time()
 
+        # Every expected worker must account for itself before this run may be
+        # called complete.
+        registry = WorkerRegistry(range(self.config.num_workers), reports=self.worker_reports)
+
         # Launch worker processes
         if self.config.num_workers > 1:
             processes = []
@@ -1246,6 +1307,7 @@ class ParallelRolloutRunner:
                         preloaded_policy,
                         self.config.filter_for_successful_trajectories,
                         type(self),  # Pass the runner class to enable customization via subclassing
+                        self.worker_reports,
                     ),
                 )
                 p.start()
@@ -1301,9 +1363,12 @@ class ParallelRolloutRunner:
 
                 time.sleep(5)
 
-            # Wait for all processes to complete
-            for p in processes:
+            # Wait for all processes to complete, recording every exit code. A
+            # worker that dies or hangs is detected here instead of silently
+            # dropping the houses it had buffered.
+            for worker_id, p in enumerate(processes):
                 p.join()
+                registry.record_exit_code(worker_id, p.exitcode)
                 p.close()
 
         else:
@@ -1328,7 +1393,9 @@ class ParallelRolloutRunner:
                 runner_class=type(
                     self
                 ),  # Pass the runner class to enable customization via subclassing
+                worker_reports=self.worker_reports,
             )
+            registry.record_exit_code(0, 0)
 
         # Extract final values from shared multiprocessing state
         success_count_val = self.success_count.value
@@ -1337,11 +1404,58 @@ class ParallelRolloutRunner:
         skipped_houses_val = self.skipped_houses.value
 
         success_rate = success_count_val / total_count_val if total_count_val > 0 else 0.0
+
+        # Fail-loud completion contract. The summary is published atomically and
+        # names every worker that did not account for itself, so a run that lost a
+        # worker can never be mistaken for a complete collection.
+        final_summary = build_final_summary(
+            registry,
+            expected_house_indices=self.house_indices,
+            expected_episodes=total_expected_episodes,
+            counters={
+                "success_count": success_count_val,
+                "total_count": total_count_val,
+                "completed_houses": completed_houses_val,
+                "skipped_houses": skipped_houses_val,
+            },
+        )
+        summary_path = write_summary_atomically(self.config.output_dir, final_summary)
+        self.logger.info(f"Wrote collection summary to {summary_path}")
+
         self.logger.info(
             f"Completed {completed_houses_val} houses, skipped {skipped_houses_val} houses"
         )
         self.logger.info(f"Success count: {success_count_val}, Total count: {total_count_val}")
         self.logger.info(f"Success rate: {success_rate * 100:.2f}%")
+        for worker_id, stats in sorted(final_summary["workers"]["per_worker"].items()):
+            self.logger.info(
+                f"Worker {worker_id}: status={stats['status']} exit={stats['exit_code']} "
+                f"houses_written={stats['houses_written']} "
+                f"attempted={stats['episodes_attempted']} written={stats['episodes_written']} "
+                f"successful={stats['episodes_successful']}"
+            )
+
+        if not final_summary["complete"]:
+            self.logger.error(
+                "COLLECTION INCOMPLETE — partial output retained at "
+                f"{self.config.output_dir}. "
+                f"missing final status: {final_summary['workers']['missing_final_status']}; "
+                f"failed workers: {final_summary['workers']['workers_with_failed_status']}; "
+                f"bad exit codes: {final_summary['workers']['nonzero_or_unknown_exit_codes']}; "
+                f"houses missing: {final_summary['houses_missing']}"
+            )
+            try:
+                registry.validate()
+            except WorkerCompletenessError as exc:
+                raise WorkerCompletenessError(
+                    f"{exc} — houses missing: {final_summary['houses_missing']}. "
+                    "Partial output retained and marked "
+                    f"{final_summary['status']}; do not treat it as canonical."
+                ) from exc
+            raise WorkerCompletenessError(
+                "data generation did not write every expected house: "
+                f"{final_summary['houses_missing']}"
+            )
 
         # Log final metrics to WandB
         if self.wandb_enabled:
