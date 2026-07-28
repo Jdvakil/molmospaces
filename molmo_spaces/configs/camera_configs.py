@@ -501,6 +501,27 @@ class FrankaSkinHybridCameraSystem(FrankaSkinCameraSystem):
     ]
 
 
+class FrankaSkinHybridWristOnlyCameraSystem(FrankaSkinCameraSystem):
+    """Wrist RGB plus the complete 40-sensor skin, with no exocentric RGB.
+
+    This is intentionally a whole-body observability test: the wrist camera keeps
+    the grasp target in view while a forearm-height intrusion can remain outside
+    its field of view. The proximity sensor definitions and ordering are exactly
+    those of :class:`FrankaSkinHybridCameraSystem`.
+    """
+
+    cameras: list[AllCameraTypes] = [
+        MjcfCameraConfig(
+            name="wrist_camera",
+            mjcf_name="gripper/wrist_camera",
+            robot_namespace="robot_0/",
+            fov=56.74,
+            record_depth=True,
+        ),
+        *_hybrid_skin_sensor_camera_specs(),
+    ]
+
+
 class FrankaEasyRandomizedDroidCameraSystem(CameraSystemConfig):
     """Camera system for Franka DROID system with wrist cam (ZED mini) and 2 randomized exo cams (ZED 2/ZED 2i).
 

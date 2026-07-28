@@ -28,6 +28,7 @@ from molmo_spaces.configs.camera_configs import (
     FrankaRandomizedDroidCameraSystem,
     FrankaSkinCameraSystem,
     FrankaSkinHybridCameraSystem,
+    FrankaSkinHybridWristOnlyCameraSystem,
     RBY1GoProD455CameraSystem,
 )
 from molmo_spaces.configs.policy_configs import (
@@ -1866,6 +1867,8 @@ from molmo_spaces.tasks.enclosure_reach import (
     ObstacleFumehoodPickSampler,
     ObstacleFumehoodPickCheckSampler,
     ObstacleAwarePickPlannerPolicyConfig,
+    PactCollisionCorridorPolicyConfig,
+    PactCollisionCorridorSampler,
     CubbyExpertPolicyConfig,
     CubbyOverreachSampler,
     PanelSlalomSampler,
@@ -2311,3 +2314,47 @@ class FrankaSkinHybridObstacleManifestV2Config(FrankaSkinHybridObstacleConfig):
     @property
     def tag(self) -> str:
         return "franka_skin_hybrid_obstacle_manifest_v2"
+
+
+# --------------------------------------------------------------------------------------- #
+# PACT collision-corridor environment.
+#
+# A matte overhead intrusion enters from the left or right at the fumehood mouth.
+# It lies in the link-5/link-6 workspace but above the wrist camera's useful view.
+# The target remains visible to that camera. Opposite intrusion sides require
+# opposite waypoint bows, so there is no single collision-free open-loop route.
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinPACTCollisionCorridorConfig")
+class FrankaSkinPACTCollisionCorridorConfig(FrankaSkinHybridObstacleCheckConfig):
+    """Single-scene collision-necessity task for ACT versus 40-sensor PACT."""
+
+    camera_config: FrankaSkinHybridWristOnlyCameraSystem = (
+        FrankaSkinHybridWristOnlyCameraSystem()
+    )
+    policy_config: BasePolicyConfig = PactCollisionCorridorPolicyConfig()
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=PactCollisionCorridorSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "pact_collision_corridor.xml")] * 2,
+        house_inds=[1],
+        samples_per_house=1,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-0.5,
+        robot_object_z_offset_random_max=0.5,
+        robot_placement_rotation_range_rad=0.20,
+        randomize_textures=False,
+        randomize_lighting=False,
+    )
+    num_workers: int = 1
+    filter_for_successful_trajectories: bool = False
+    viz_sensor_rgb: bool = False
+    output_dir: Path = ASSETS_DIR / "datagen" / "pact_collision_corridor_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pact_collision_corridor_v1"

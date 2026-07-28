@@ -1293,3 +1293,123 @@ class ObstacleAwarePickPlannerPolicyConfig(PickPlannerPolicyConfig):
     def model_post_init(self, __context) -> None:
         super().model_post_init(__context)
         self.policy_cls = ObstacleAwarePickPlannerPolicy
+
+
+class PactCollisionCorridorSampler(BigFumehoodPickSampler):
+    """Alternating hidden-from-wrist intrusion in the distal-arm corridor.
+
+    The manipulation target is sampled independently near the hood centre. A
+    committed row pins whether the overhead panel enters from the left or right.
+    The panels have identical matte appearance and only the active panel is posed
+    in the work volume. Their geometry is sensed by the link-5/link-6 skin.
+    """
+
+    PANEL_X = 0.64
+    PANEL_Z = 1.10
+    PANEL_HALF = np.array([0.030, 0.240, 0.045], dtype=float)
+    PANEL_INNER_FACE_Y = 0.020
+    _pact_manifest_row: dict | None = None
+
+    def set_pact_manifest_row(self, row: dict) -> None:
+        side = str(row.get("intrusion_side", ""))
+        if side not in {"left", "right"}:
+            raise ValueError(f"intrusion_side must be left or right, got {side!r}")
+        self._pact_manifest_row = dict(row)
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        row = self._pact_manifest_row
+        side_name = (
+            str(row["intrusion_side"])
+            if row is not None
+            else ("left" if np.random.random() < 0.5 else "right")
+        )
+        side = 1.0 if side_name == "left" else -1.0
+        x_jitter = float(row.get("panel_x_jitter_m", 0.0)) if row is not None else 0.0
+        face_jitter = (
+            float(row.get("panel_face_jitter_m", 0.0)) if row is not None else 0.0
+        )
+        face = float(self.PANEL_INNER_FACE_Y + face_jitter)
+        center = [
+            float(self.PANEL_X + x_jitter),
+            float(side * (face + self.PANEL_HALF[1])),
+            float(self.PANEL_Z),
+        ]
+        th.update(
+            {
+                "cell": "pact_collision_corridor",
+                "protrusion_present": True,
+                "protr_wall": side_name,
+                "protr_name": f"pact_intrusion_{side_name}",
+                "protr_center": center,
+                "protr_half": self.PANEL_HALF.tolist(),
+                "pact_intrusion_side": side_name,
+                "pact_panel_inner_face_y_m": face,
+                "pact_environment_version": "pact_collision_corridor_v1",
+                "light_scale": 1.0,
+            }
+        )
+        return th
+
+    def _apply_theta(self, env, th):
+        # Reuse the validated fumehood shell placement, but prevent it from
+        # interpreting the custom panel name as one of its legacy PROTR bars.
+        active = bool(th["protrusion_present"])
+        th["protrusion_present"] = False
+        FumehoodSampler._apply_theta(self, env, th)
+        th["protrusion_present"] = active
+
+        for name, y in (
+            ("pact_intrusion_left", 1.8),
+            ("pact_intrusion_right", -1.8),
+        ):
+            self._mocap_set(env, name, [0.0, y, -2.0])
+        self._mocap_set(env, th["protr_name"], th["protr_center"])
+        th["obstacle_aabbs"].append(
+            [list(map(float, th["protr_center"])), list(map(float, th["protr_half"]))]
+        )
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+    def _obj_rest(self):
+        # Independent of intrusion side: target pixels cannot leak the route.
+        return (
+            float(TUBE_X0 + 0.20),
+            float(np.random.uniform(-0.04, 0.04)),
+            float(SHELF_TOP_Z),
+        )
+
+
+class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
+    """Privileged expert that bows away from the active overhead intrusion."""
+
+    GRIP_HALF = 0.11
+    SAFE_GAP = 0.06
+    PASS_SPEED = 0.045
+
+    def reset(self, reset_retries: bool = True):
+        from molmo_spaces.tasks.pact_contact_audit import PactContactAudit
+
+        if reset_retries or not hasattr(self, "_pact_contact_audit"):
+            self._pact_contact_audit = PactContactAudit()
+            self._pact_control_step = 0
+        return super().reset(reset_retries)
+
+    def get_action(self, observation):
+        self._pact_contact_audit.observe(self.task.env, self._pact_control_step)
+        action = super().get_action(observation)
+        self._pact_control_step += 1
+        return action
+
+    def get_info(self):
+        self._pact_contact_audit.observe(self.task.env, self._pact_control_step)
+        info = super().get_info()
+        info["pact_contact_audit"] = self._pact_contact_audit.summary()
+        return info
+
+
+class PactCollisionCorridorPolicyConfig(PickPlannerPolicyConfig):
+    """Wires the collision-corridor expert into normal datagen."""
+
+    def model_post_init(self, __context) -> None:
+        super().model_post_init(__context)
+        self.policy_cls = PactCollisionCorridorPolicy
