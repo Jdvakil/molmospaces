@@ -1396,7 +1396,9 @@ class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
     """Privileged expert that bows away from the active overhead intrusion."""
 
     GRIP_HALF = 0.11
-    SAFE_GAP = 0.08
+    # Remediation v2 raises the expert-only nominal clearance from 8 cm to
+    # 10 cm.  The scene geometry is intentionally unchanged.
+    SAFE_GAP = 0.10
     PASS_SPEED = 0.045
 
     def reset(self, reset_retries: bool = True):
@@ -1423,6 +1425,14 @@ class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
 
 class PactCollisionCorridorPolicyConfig(PickPlannerPolicyConfig):
     """Wires the collision-corridor expert into normal datagen."""
+
+    # Retrying after rollout start calls reset() from a moved robot/object
+    # state, which can turn a scientific motion failure into an uncaught
+    # trajectory-construction IK exception.  Initial reset/trajectory
+    # construction is already retried by the manifest runner before the
+    # outcome-bearing boundary.  Once a rollout starts, terminate any planner
+    # failure as a normal task failure and retain that row's outcome.
+    max_retries: int = 0
 
     def model_post_init(self, __context) -> None:
         super().model_post_init(__context)
