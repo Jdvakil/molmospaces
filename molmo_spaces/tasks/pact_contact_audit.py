@@ -105,6 +105,8 @@ class PactContactAudit:
         non_target = self._pair_totals["hazard_bar"] + self._pair_totals["other_environment"]
         return {
             "contact_taxonomy_version": "pact_robot_environment_v1",
+            "sampling_level": "every_2ms_control_physics_step_plus_episode_boundaries",
+            "sample_count": len(self._seen_times),
             "contact_class_totals": dict(self._pair_totals),
             "frames_with_contact": dict(self._frames_with),
             "first_contact_step": dict(self._first_step),

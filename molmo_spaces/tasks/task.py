@@ -377,6 +377,14 @@ class BaseMujocoTask(ABC):
             for robot in self._env.robots:
                 robot.compute_control()
             self._env.step(self._n_sim_steps_per_ctrl)
+            # Opt-in high-frequency contact auditing. Scientific collision
+            # endpoints cannot rely only on the next policy observation: a
+            # contact can begin and resolve inside one policy interval. Tasks
+            # that install this hook are observed after every control/physics
+            # step; all other tasks retain their exact existing path.
+            contact_audit = getattr(self, "_contact_audit_hook", None)
+            if contact_audit is not None:
+                contact_audit.observe(self._env, int(self.episode_step_count))
             sim_steps_in_policy += self._n_sim_steps_per_ctrl
             if (
                 self._proximity_camera_names

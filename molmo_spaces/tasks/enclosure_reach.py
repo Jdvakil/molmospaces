@@ -1392,6 +1392,7 @@ class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
         if reset_retries or not hasattr(self, "_pact_contact_audit"):
             self._pact_contact_audit = PactContactAudit()
             self._pact_control_step = 0
+        self.task._contact_audit_hook = self._pact_contact_audit
         return super().reset(reset_retries)
 
     def get_action(self, observation):
