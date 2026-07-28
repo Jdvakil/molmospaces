@@ -1304,10 +1304,10 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
     in the work volume. Their geometry is sensed by the link-5/link-6 skin.
     """
 
-    PANEL_X = 0.595
-    PANEL_Z = 0.88
-    PANEL_HALF = np.array([0.075, 0.240, 0.080], dtype=float)
-    PANEL_INNER_FACE_Y = 0.080
+    PANEL_X = 0.615
+    PANEL_Z = 0.89
+    PANEL_HALF = np.array([0.055, 0.240, 0.090], dtype=float)
+    PANEL_INNER_FACE_Y = 0.100
     SASH_APERTURE_HEIGHT = 0.70
     TARGET_UID = "Cup_10"
     BASE_FWD = 0.14
@@ -1396,7 +1396,7 @@ class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
     """Privileged expert that bows away from the active overhead intrusion."""
 
     GRIP_HALF = 0.11
-    SAFE_GAP = 0.10
+    SAFE_GAP = 0.08
     PASS_SPEED = 0.045
 
     def reset(self, reset_retries: bool = True):
