@@ -1307,7 +1307,7 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
     PANEL_X = 0.64
     PANEL_Z = 1.10
     PANEL_HALF = np.array([0.030, 0.240, 0.045], dtype=float)
-    PANEL_INNER_FACE_Y = 0.020
+    PANEL_INNER_FACE_Y = 0.100
     BASE_FWD = 0.14
     _pact_manifest_row: dict | None = None
 
@@ -1319,6 +1319,9 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
 
     def _draw_theta(self):
         th = super()._draw_theta()
+        # Keep the opposite-side detour physically open and identical across
+        # instances; task variation comes from target y, panel jitter, and side.
+        th["ap_w"] = 0.85
         row = self._pact_manifest_row
         side_name = (
             str(row["intrusion_side"])
@@ -1384,7 +1387,7 @@ class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
     """Privileged expert that bows away from the active overhead intrusion."""
 
     GRIP_HALF = 0.11
-    SAFE_GAP = 0.06
+    SAFE_GAP = 0.18
     PASS_SPEED = 0.045
 
     def reset(self, reset_retries: bool = True):
