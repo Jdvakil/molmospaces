@@ -1308,6 +1308,7 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
     PANEL_Z = 1.10
     PANEL_HALF = np.array([0.030, 0.240, 0.045], dtype=float)
     PANEL_INNER_FACE_Y = 0.020
+    BASE_FWD = 0.14
     _pact_manifest_row: dict | None = None
 
     def set_pact_manifest_row(self, row: dict) -> None:
@@ -1373,7 +1374,7 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
     def _obj_rest(self):
         # Independent of intrusion side: target pixels cannot leak the route.
         return (
-            float(TUBE_X0 + 0.20),
+            float(TUBE_X0 + 0.18),
             float(np.random.uniform(-0.04, 0.04)),
             float(SHELF_TOP_Z),
         )
