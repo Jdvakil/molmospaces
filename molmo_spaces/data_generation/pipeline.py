@@ -751,6 +751,7 @@ class ParallelRolloutRunner:
         shutdown_event=None,
         datagen_profiler: DatagenProfiler | None = None,
         end_on_success: bool = False,
+        initial_reset_result=None,
     ) -> bool:
         """Execute a single rollout with the given task and policy.
 
@@ -762,6 +763,9 @@ class ParallelRolloutRunner:
             viewer: MuJoCo viewer for visualization (optional)
             shutdown_event: Event to signal shutdown (optional)
             datagen_profiler: DatagenProfiler for per-worker timing (optional)
+            initial_reset_result: Optional prevalidated ``task.reset()`` result.
+                Supplying it prevents a second reset and begins from that exact
+                accepted initial observation.
 
         Returns:
             bool: Whether the episode was successful
@@ -772,7 +776,10 @@ class ParallelRolloutRunner:
             datagen_profiler.start("rollout_total")
             datagen_profiler.start("rollout_reset")
 
-        observation, _info = task.reset()
+        if initial_reset_result is None:
+            observation, _info = task.reset()
+        else:
+            observation, _info = initial_reset_result
 
         if datagen_profiler is not None:
             datagen_profiler.end("rollout_reset")

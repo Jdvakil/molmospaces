@@ -1382,12 +1382,11 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
             float(SHELF_TOP_Z),
         )
 
-
 class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
     """Privileged expert that bows away from the active overhead intrusion."""
 
     GRIP_HALF = 0.11
-    SAFE_GAP = 0.18
+    SAFE_GAP = 0.28
     PASS_SPEED = 0.045
 
     def reset(self, reset_retries: bool = True):
