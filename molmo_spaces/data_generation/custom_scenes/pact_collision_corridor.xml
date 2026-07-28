@@ -80,9 +80,9 @@
       <geom name="protr_l_g" class="hood" type="box" size="0.035 0.035 0.12"/>
     </body>
 
-    <!-- Exactly one matte, wall-coloured overhead intrusion is activated per
-         episode. It enters from the left or right above the wrist camera's view
-         and intersects the nominal link-5/link-6 corridor. The opposite-side
+    <!-- Exactly one matte, wall-coloured lateral intrusion is activated per
+         episode. It enters from the left or right outside the wrist camera's
+         useful view and intersects the nominal wrist/link-6 passage. The opposite-side
          waypoint is physically open, so the scripted expert can solve either
          side without contact. -->
     <body name="pact_intrusion_left" mocap="true" pos="0 1.8 -2.0">

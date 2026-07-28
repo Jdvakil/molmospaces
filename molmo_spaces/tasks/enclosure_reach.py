@@ -1308,8 +1308,17 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
     PANEL_Z = 0.88
     PANEL_HALF = np.array([0.030, 0.240, 0.080], dtype=float)
     PANEL_INNER_FACE_Y = 0.080
+    SASH_APERTURE_HEIGHT = 0.70
+    TARGET_UID = "Cup_10"
     BASE_FWD = 0.14
     _pact_manifest_row: dict | None = None
+
+    def _build_grasp_uid_pool(self, n: int) -> list[str]:
+        # Cup_10 is a grasp-validated 7.0 x 7.3 cm cup, safely inside the
+        # Franka's 8.5 cm finger span. The previous 10.1 cm cup slipped during
+        # lift in 2/8 development rows and made task solvability, rather than
+        # surface avoidance, the limiting variable.
+        return [self.TARGET_UID] * int(n)
 
     def set_pact_manifest_row(self, row: dict) -> None:
         side = str(row.get("intrusion_side", ""))
@@ -1322,6 +1331,7 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
         # Keep the opposite-side detour physically open and identical across
         # instances; task variation comes from target y, panel jitter, and side.
         th["ap_w"] = 0.85
+        th["ap_h"] = self.SASH_APERTURE_HEIGHT
         row = self._pact_manifest_row
         side_name = (
             str(row["intrusion_side"])

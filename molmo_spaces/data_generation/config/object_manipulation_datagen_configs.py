@@ -2319,8 +2319,8 @@ class FrankaSkinHybridObstacleManifestV2Config(FrankaSkinHybridObstacleConfig):
 # --------------------------------------------------------------------------------------- #
 # PACT collision-corridor environment.
 #
-# A matte overhead intrusion enters from the left or right at the fumehood mouth.
-# It lies in the link-5/link-6 workspace but above the wrist camera's useful view.
+# A matte lateral intrusion enters from the left or right at the fumehood mouth.
+# It lies in the wrist/link-6 passage but outside the wrist camera's useful view.
 # The target remains visible to that camera. Opposite intrusion sides require
 # opposite waypoint bows, so there is no single collision-free open-loop route.
 # --------------------------------------------------------------------------------------- #
