@@ -1304,9 +1304,9 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
     in the work volume. Their geometry is sensed by the link-5/link-6 skin.
     """
 
-    PANEL_X = 0.64
+    PANEL_X = 0.55
     PANEL_Z = 0.88
-    PANEL_HALF = np.array([0.030, 0.240, 0.080], dtype=float)
+    PANEL_HALF = np.array([0.120, 0.240, 0.080], dtype=float)
     PANEL_INNER_FACE_Y = 0.080
     SASH_APERTURE_HEIGHT = 0.70
     TARGET_UID = "Cup_10"
