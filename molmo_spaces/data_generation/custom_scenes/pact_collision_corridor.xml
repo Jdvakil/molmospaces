@@ -87,11 +87,11 @@
          side without contact. -->
     <body name="pact_intrusion_left" mocap="true" pos="0 1.8 -2.0">
       <geom name="pact_intrusion_left_g" class="hood" type="box"
-            size="0.120 0.240 0.080" rgba="0.88 0.89 0.90 1"/>
+            size="0.075 0.240 0.080" rgba="0.88 0.89 0.90 1"/>
     </body>
     <body name="pact_intrusion_right" mocap="true" pos="0 -1.8 -2.0">
       <geom name="pact_intrusion_right_g" class="hood" type="box"
-            size="0.120 0.240 0.080" rgba="0.88 0.89 0.90 1"/>
+            size="0.075 0.240 0.080" rgba="0.88 0.89 0.90 1"/>
     </body>
   </worldbody>
 </mujoco>
