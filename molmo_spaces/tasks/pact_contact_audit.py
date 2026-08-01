@@ -7,6 +7,7 @@ manipulation target is recorded but is not safety-relevant.
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from typing import Any
 
@@ -64,12 +65,18 @@ class PactContactAudit:
     """Accumulate pair entries and frames-with-contact once per simulator time."""
 
     def __init__(self) -> None:
+        self._retain_contact_frames = (
+            os.environ.get("PACT_CONTACT_AUDIT_SUMMARY_ONLY") != "1"
+        )
         self.reset()
 
     def reset(self) -> None:
         self._seen_times: set[float] = set()
         self._pair_totals = {key: 0 for key in CONTACT_CLASSES}
         self._frames_with = {key: 0 for key in CONTACT_CLASSES}
+        self._maximum_penetration_depth_m = {
+            key: 0.0 for key in CONTACT_CLASSES
+        }
         self._first_step = {key: None for key in CONTACT_CLASSES}
         self._pairs_by_step: list[dict[str, Any]] = []
 
@@ -84,12 +91,16 @@ class PactContactAudit:
             contact_class = classify_contact(pair)
             frame_counts[contact_class] += 1
             self._pair_totals[contact_class] += 1
+            self._maximum_penetration_depth_m[contact_class] = max(
+                self._maximum_penetration_depth_m[contact_class],
+                max(0.0, -float(pair["distance_m"])),
+            )
         for contact_class in CONTACT_CLASSES:
             if frame_counts[contact_class]:
                 self._frames_with[contact_class] += 1
                 if self._first_step[contact_class] is None:
                     self._first_step[contact_class] = int(step)
-        if pairs:
+        if pairs and self._retain_contact_frames:
             self._pairs_by_step.append(
                 {
                     "step": int(step),
@@ -109,8 +120,12 @@ class PactContactAudit:
             "sample_count": len(self._seen_times),
             "contact_class_totals": dict(self._pair_totals),
             "frames_with_contact": dict(self._frames_with),
+            "maximum_penetration_depth_m": dict(
+                self._maximum_penetration_depth_m
+            ),
             "first_contact_step": dict(self._first_step),
             "non_target_contact_entries": int(non_target),
             "collision_free": bool(non_target == 0),
+            "contact_frame_payload_retained": self._retain_contact_frames,
             "contact_frames": list(self._pairs_by_step),
         }
