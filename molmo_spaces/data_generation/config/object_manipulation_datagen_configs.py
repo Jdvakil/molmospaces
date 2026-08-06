@@ -1865,6 +1865,8 @@ from molmo_spaces.tasks.enclosure_reach import (
     BigFumehoodPickSampler,
     ObstacleFumehoodPickSampler,
     ObstacleFumehoodPickCheckSampler,
+    InvisibleObstacleFumehoodPickSampler,
+    InvisibleObstacleFumehoodPickCheckSampler,
     ObstacleAwarePickPlannerPolicyConfig,
     CubbyExpertPolicyConfig,
     CubbyOverreachSampler,
@@ -2247,3 +2249,74 @@ class FrankaSkinHybridObstacleConfig(FrankaSkinHybridObstacleCheckConfig):
     @property
     def tag(self) -> str:
         return "franka_skin_hybrid_obstacle_v1"
+
+
+# --------------------------------------------------------------------------------------- #
+# INVISIBLE-BAR obstacle collection: same one-env pick as above, but the sampler hides a
+# fraction of the hazard bars from every RGB camera (geom group 4 — proximity renderer
+# only) and decouples object placement from bar presence, so the skin becomes the ONLY
+# observation that explains the planner's veer. Mix at OBSTACLE_P=0.75 x INVIS_P=0.5:
+# 25% free / 37.5% visible-bar / 37.5% invisible-bar episodes.
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinHybridInvisObstacleCheckConfig")
+class FrankaSkinHybridInvisObstacleCheckConfig(FrankaSkinHybridObstacleCheckConfig):
+    """Preflight: house 1 (red cup) x 2 episodes, 1 worker, bar FORCED present AND
+    invisible. Verify in the outputs: NO bar in the exo/wrist videos, '[ObstaclePick]
+    DEFLECT' and '[InvisBar]' in the log, prox returns still dip into the 3-15 cm band
+    at the bar's x-station, grasp still succeeds. Then launch the InvisObstacle config."""
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=InvisibleObstacleFumehoodPickCheckSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 2,
+        house_inds=[1],
+        samples_per_house=2,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=False,
+        randomize_lighting=False,
+    )
+    num_workers: int = 1
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_invis_obstacle_check"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_invis_obstacle_check"
+
+
+@register_config("FrankaSkinHybridInvisObstacleConfig")
+class FrankaSkinHybridInvisObstacleConfig(FrankaSkinHybridInvisObstacleCheckConfig):
+    """The invisible-bar ACT collection: 8 wrap-around house indices (all = 1 mod 24 ->
+    the SAME red cup task) x 25 samples = 200 episodes on 4 workers. Wrap-around indices
+    exist purely to parallelize. 75% of episodes have the bar; half of those bars are
+    hidden from RGB, so ~37.5% of episodes carry a skin-only hazard."""
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=InvisibleObstacleFumehoodPickSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 170,
+        house_inds=[1, 25, 49, 73, 97, 121, 145, 169],
+        samples_per_house=25,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=False,
+    )
+    num_workers: int = 4
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_invis_obstacle_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_invis_obstacle_v1"

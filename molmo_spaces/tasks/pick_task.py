@@ -74,9 +74,26 @@ class PickTask(BaseMujocoTask):
 
         return rewards
 
+    def is_terminal(self) -> np.ndarray:
+        """Standard terminal logic, plus the opt-in strict-safety criterion: terminate the
+        episode the moment the arm first penetrates an obstacle body, when
+        ``config.end_on_collision`` is enabled. Combined with the success demotion in
+        ``get_info``, a single collision becomes an immediate failure and the rollout loop
+        (``while not task.is_done()``) moves on to the next episode. Off by default, so
+        ordinary datagen / non-strict eval is unchanged."""
+        terminal = super().is_terminal()
+        if getattr(self.config, "end_on_collision", False) and getattr(
+            self, "_obstacle_collision_occurred", False
+        ):
+            terminal[0] = True
+        return terminal
+
     def get_info(self) -> list[dict[str, Any]]:
         """Get additional metrics for each environment."""
         metrics = []
+
+        # Per-episode arm<->obstacle collision diagnostic (see _accumulate_obstacle_diag).
+        self._reset_obstacle_diag_if_new_episode()
 
         for i in range(self._env.n_batch):
             data = self._env.mj_datas[i]
@@ -129,11 +146,26 @@ class PickTask(BaseMujocoTask):
 
             only_robot_collision = robot_collision and not non_robot_collision
 
+            # Diagnostic only: count penetrating arm<->obstacle contacts this step
+            # (env index 0; single-env eval). Never affects success / reward.
+            if i == 0:
+                self._accumulate_obstacle_diag(data, pickup_obj)
+
             # Success check
             success = (
                 only_robot_collision and lift_height >= self.config.task_config.succ_pos_threshold
                 # and rot_error < self.config.task_config.succ_rot_threshold
             )
+            # Strict-safety criterion (opt-in via config.end_on_collision): any arm<->obstacle
+            # penetration this episode demotes it to a FAILURE; PickTask.is_terminal() also ends
+            # the episode on the first contact. Single-env (i==0) only; default off leaves
+            # success / reward byte-for-byte as in collection.
+            if (
+                i == 0
+                and getattr(self.config, "end_on_collision", False)
+                and getattr(self, "_obstacle_collision_occurred", False)
+            ):
+                success = False
 
             metrics.append(
                 {
@@ -144,7 +176,77 @@ class PickTask(BaseMujocoTask):
                 }
             )
 
+        if metrics:
+            self._maybe_log_obstacle_diag(bool(metrics[0]["success"]))
+
         return metrics
+
+    # ------------------------------------------------------------------
+    # Arm <-> obstacle collision diagnostic (additive; does NOT change success,
+    # reward, or saved trajectory data). Emits one INFO line per episode:
+    #   [ObstacleDiag] success=False obstacle_contact_steps=37/200 peak=4 first_contact_step=61
+    # This is the safety metric the proximity-sensing policy is meant to beat: a
+    # vision-only policy wedges the arm into the cavity / hazard bar (high
+    # contact_steps), while a proximity policy should keep the arm clear (low / zero).
+    # Penetrating (dist<=0) contacts only, excluding robot self-collision, the grasped
+    # pickup object, and the floor.
+    # ------------------------------------------------------------------
+    def _reset_obstacle_diag_if_new_episode(self) -> None:
+        if self.episode_step_count == 0 or not hasattr(self, "_obstacle_diag"):
+            self._obstacle_diag: dict[int, int] = {}
+            self._obstacle_diag_logged = False
+            # Sticky flag: flips True the first step the arm penetrates any obstacle body.
+            # Read by is_terminal() + get_info() for the opt-in strict-safety criterion.
+            self._obstacle_collision_occurred = False
+
+    def _accumulate_obstacle_diag(self, data, pickup_obj) -> None:
+        try:
+            robot_root = self.env.current_robot.robot_view.base.root_body_id
+            model = data.model
+            others = set()
+            for c in data.contact:
+                if c.dist > 0:  # only actual penetrating contacts
+                    continue
+                r1 = model.body_rootid[model.geom_bodyid[c.geom1]]
+                r2 = model.body_rootid[model.geom_bodyid[c.geom2]]
+                is_r1 = r1 == robot_root
+                is_r2 = r2 == robot_root
+                if is_r1 == is_r2:  # robot self-collision or env<->env
+                    continue
+                other = int(r2 if is_r1 else r1)
+                if other == pickup_obj.body_id:  # the cup we are grasping
+                    continue
+                if "floor" in model.body(other).name.lower():
+                    continue
+                # Count DISTINCT obstacle bodies (cavity wall / shelf / hazard bar /
+                # fumehood), not raw geom-pairs, so `peak` reads as "# obstacle bodies
+                # the arm is wedged against this step".
+                others.add(other)
+            self._obstacle_diag[self.episode_step_count] = len(others)
+            if len(others) > 0:
+                self._obstacle_collision_occurred = True
+        except Exception as e:  # pragma: no cover - metric must never break a rollout
+            log.debug(f"[ObstacleDiag] accumulate failed: {e}")
+
+    def _maybe_log_obstacle_diag(self, success: bool) -> None:
+        if getattr(self, "_obstacle_diag_logged", True):
+            return
+        try:
+            ending = bool(self.is_timed_out().any() or self.is_terminal().any())
+        except Exception:
+            ending = False
+        if not ending:
+            return
+        counts = getattr(self, "_obstacle_diag", {})
+        T = max(len(counts), 1)
+        contact_steps = sum(1 for v in counts.values() if v > 0)
+        peak = max(counts.values()) if counts else 0
+        first = next((s for s in sorted(counts) if counts[s] > 0), None)
+        self._obstacle_diag_logged = True
+        log.info(
+            "[ObstacleDiag] success=%s obstacle_contact_steps=%d/%d peak=%d first_contact_step=%s",
+            success, contact_steps, T, peak, str(first),
+        )
 
     def get_obs_scene(self):
         """

@@ -351,11 +351,13 @@ class CPUMujocoEnv(BaseMujocoEnv):
 
     def _get_proximity_scene_option(self) -> "mujoco.MjvOption":
         """Scene option for proximity rendering: hides the cosmetic skin (geom group 2)
-        so the embedded sensors see the environment, not their own skin. Memoized."""
+        so the embedded sensors see the environment, not their own skin, and enables
+        sensor-only geoms (group 4) that the RGB renderers' default mask excludes. Memoized."""
         if self._proximity_scene_option is None:
             opt = mujoco.MjvOption()
             mujoco.mjv_defaultOption(opt)
             opt.geomgroup[2] = 0  # hide skin (group=2)
+            opt.geomgroup[4] = 1  # sensor-only geoms: hidden from RGB renderers (default mask), visible to skin
             self._proximity_scene_option = opt
         return self._proximity_scene_option
 

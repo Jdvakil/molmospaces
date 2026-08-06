@@ -1172,6 +1172,75 @@ class ObstacleFumehoodPickCheckSampler(ObstacleFumehoodPickSampler):
     OBSTACLE_P = 1.0
 
 
+class InvisibleObstacleFumehoodPickSampler(ObstacleFumehoodPickSampler):
+    """Obstacle fumehood pick where a fraction of the hazard bars are SENSOR-ONLY: the
+    chosen bar's geom is moved to geom group 4, which the RGB renderers' default MjvOption
+    mask [1,1,1,0,0,0] excludes from every policy camera (the geom never enters the mjv
+    scene, so no pixels and no shadow), while the proximity depth renderer's private scene
+    option enables group 4 (env._get_proximity_scene_option). Geom group is visualization-
+    only in MuJoCo, so collision physics, the hazard-bar contact metric and the scripted
+    planner's deflection (which reads scene_params, not pixels) are all unchanged — on
+    invisible-bar episodes the skin is the ONLY observation that explains the veer.
+
+    Leak fix vs the parent: ObstacleFumehoodPickSampler._obj_rest snaps the object to the
+    bar's side ONLY when a bar is present, so vision could infer bar presence from the
+    cup's position alone. Here protr_wall / bar_face_y / obj_gap are drawn on EVERY
+    episode and _obj_rest always applies the same placement law, so object placement is
+    marginally independent of bar presence and only the skin disambiguates."""
+
+    INVIS_P = 0.5   # fraction of bar episodes whose bar is hidden from RGB
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        # ALWAYS draw the object-placement coupling fields (bar or no bar) so the object
+        # position distribution is identical across free / visible-bar / invisible-bar
+        # episodes. On bar episodes this overwrites the parent's draws (same ranges).
+        th["protr_wall"] = str(np.random.choice(["left", "right"]))
+        th["bar_face_y"] = float(np.random.uniform(*self.BAR_FACE_Y))
+        th["obj_gap"] = float(np.random.uniform(*self.OBJ_GAP))
+        if th["protrusion_present"]:
+            # keep the derived mocap-placement fields consistent with the re-drawn face
+            th["intrusion"] = float(th["ap_w"] / 2 - th["bar_face_y"])
+            th["residual_margin"] = float(th["clearance"] - th["intrusion"])
+        th["bar_invisible"] = bool(th["protrusion_present"]
+                                   and np.random.random() < self.INVIS_P)
+        return th
+
+    def _obj_rest(self):
+        x, y, z = super()._obj_rest()
+        th = getattr(self, "_theta", None) or {}
+        # one placement law on every episode: the object sits where the bar's inner face
+        # WOULD be minus the gap, whether or not the bar actually exists this episode
+        side = 1.0 if th.get("protr_wall") == "left" else -1.0
+        y_lim = max(0.0, float(th.get("ap_w", 0.6)) / 2 - 0.08)
+        y = float(np.clip(side * (th.get("bar_face_y", 0.19) - th.get("obj_gap", 0.16)),
+                          -y_lim, y_lim))
+        return (x, y, z)
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)  # mocap posing + orange paint (never rendered when hidden)
+        m = env.current_model
+        # The model persists across episodes (mocap-repose pipeline never recompiles):
+        # reset ALL bars to the renderable group first so invisibility cannot leak into
+        # later visible/free episodes, then hide only this episode's bar if drawn so.
+        for name in PROTR:
+            try:
+                m.geom_group[m.geom(f"{name}_g").id] = 0
+            except Exception:
+                pass
+        if th["protrusion_present"] and th.get("bar_invisible"):
+            m.geom_group[m.geom(f"{th['protr_name']}_g").id] = 4
+            log.info(f"[InvisBar] {th['protr_name']} -> geom group 4: hidden from RGB, "
+                     f"visible to skin, physics unchanged")
+
+
+class InvisibleObstacleFumehoodPickCheckSampler(InvisibleObstacleFumehoodPickSampler):
+    """Preflight variant: bar present AND invisible on EVERY episode."""
+
+    OBSTACLE_P = 1.0
+    INVIS_P = 1.0
+
+
 from molmo_spaces.policy.solvers.object_manipulation.pick_planner_policy import (  # noqa: E402
     PickPlannerPolicy,
 )
