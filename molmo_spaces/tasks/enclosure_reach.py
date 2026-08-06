@@ -1434,6 +1434,59 @@ class PactCollisionCorridorShallowerWiderSampler(
     PANEL_X = 0.55
     APERTURE_WIDTH = 1.00
 
+
+class PactCollisionCorridorPanelX058Sampler(PactCollisionCorridorControlSampler):
+    """Attempt-2 envelope candidate: panel x-position 0.58 m."""
+
+    PACT_GEOMETRY_CONDITION = "X_058"
+    PANEL_X = 0.58
+
+
+class PactCollisionCorridorPanelX065Sampler(PactCollisionCorridorControlSampler):
+    """Attempt-2 envelope candidate: panel x-position 0.65 m."""
+
+    PACT_GEOMETRY_CONDITION = "X_065"
+    PANEL_X = 0.65
+
+
+class PactCollisionCorridorPanelZ085Sampler(PactCollisionCorridorControlSampler):
+    """Attempt-2 envelope candidate: panel height 0.85 m."""
+
+    PACT_GEOMETRY_CONDITION = "Z_085"
+    PANEL_Z = 0.85
+
+
+class PactCollisionCorridorPanelZ093Sampler(PactCollisionCorridorControlSampler):
+    """Attempt-2 envelope candidate: panel height 0.93 m."""
+
+    PACT_GEOMETRY_CONDITION = "Z_093"
+    PANEL_Z = 0.93
+
+
+class PactCollisionCorridorPanelHalfY018Sampler(
+    PactCollisionCorridorControlSampler
+):
+    """Attempt-2 envelope candidate: lateral half-extent 0.18 m."""
+
+    PACT_GEOMETRY_CONDITION = "HALF_Y_018"
+    PANEL_HALF = np.array([0.055, 0.180, 0.090], dtype=float)
+
+
+class PactCollisionCorridorPanelHalfY030Sampler(
+    PactCollisionCorridorControlSampler
+):
+    """Attempt-2 envelope candidate: lateral half-extent 0.30 m."""
+
+    PACT_GEOMETRY_CONDITION = "HALF_Y_030"
+    PANEL_HALF = np.array([0.055, 0.300, 0.090], dtype=float)
+
+
+class PactCollisionCorridorAperture095Sampler(PactCollisionCorridorControlSampler):
+    """Attempt-2 envelope candidate: aperture width 0.95 m."""
+
+    PACT_GEOMETRY_CONDITION = "AP_W_095"
+    APERTURE_WIDTH = 0.95
+
 class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
     """Privileged expert that bows away from the active overhead intrusion."""
 
