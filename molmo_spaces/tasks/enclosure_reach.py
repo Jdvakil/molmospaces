@@ -1392,6 +1392,48 @@ class PactCollisionCorridorSampler(BigFumehoodPickSampler):
             float(SHELF_TOP_Z),
         )
 
+
+class PactCollisionCorridorControlSampler(PactCollisionCorridorSampler):
+    """Fresh in-distribution control for the geometry-generalization study."""
+
+    PACT_GEOMETRY_CONDITION = "C0"
+    APERTURE_WIDTH = 0.85
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["ap_w"] = float(self.APERTURE_WIDTH)
+        th["pact_geometry_condition"] = self.PACT_GEOMETRY_CONDITION
+        th["pact_geometry_generalization_version"] = "v1"
+        return th
+
+
+class PactCollisionCorridorDeeperHigherSampler(
+    PactCollisionCorridorControlSampler
+):
+    """C1: a panel deeper in the corridor and higher above the bench."""
+
+    PACT_GEOMETRY_CONDITION = "C1"
+    PANEL_X = 0.68
+    PANEL_Z = 0.96
+
+
+class PactCollisionCorridorTighterSampler(PactCollisionCorridorControlSampler):
+    """C2: a farther-intruding panel with a tighter vertical aperture."""
+
+    PACT_GEOMETRY_CONDITION = "C2"
+    PANEL_INNER_FACE_Y = 0.070
+    APERTURE_WIDTH = 0.70
+
+
+class PactCollisionCorridorShallowerWiderSampler(
+    PactCollisionCorridorControlSampler
+):
+    """C3: a shallower panel paired with a wider vertical aperture."""
+
+    PACT_GEOMETRY_CONDITION = "C3"
+    PANEL_X = 0.55
+    APERTURE_WIDTH = 1.00
+
 class PactCollisionCorridorPolicy(ObstacleAwarePickPlannerPolicy):
     """Privileged expert that bows away from the active overhead intrusion."""
 
