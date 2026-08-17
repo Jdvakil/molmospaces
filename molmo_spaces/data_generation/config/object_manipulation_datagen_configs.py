@@ -1877,6 +1877,11 @@ from molmo_spaces.tasks.house_embed import (
     HousePanelSlalomSampler,
     HouseCubbyOverreachSampler,
 )
+from molmo_spaces.tasks.fumehood_clutter import (
+    ClutteredFumehoodPickPlaceSampler,
+    ClutteredFumehoodPickPlaceCheckSampler,
+    ClutteredPickPlacePolicyConfig,
+)
 from molmo_spaces.configs.task_configs import PickTaskConfig
 
 _ENCLOSURE_XML = str(_CUSTOM_SCENES / "enclosure_param.xml")
@@ -2320,3 +2325,108 @@ class FrankaSkinHybridInvisObstacleConfig(FrankaSkinHybridInvisObstacleCheckConf
     @property
     def tag(self) -> str:
         return "franka_skin_hybrid_invis_obstacle_v1"
+
+
+# --------------------------------------------------------------------------------------- #
+# CLUTTERED-BAY PICK-AND-PLACE. The obstacle line above puts one hazard bar beside the
+# approach and ends the episode at the lift. This line puts the robot in a realistic
+# cluttered lab bay -- a three-tier shelving unit on its left, a floor cabinet behind it,
+# a rolling cart on its right, and 16 re-posed items standing on those surfaces -- and then
+# makes it carry the object out of the hood and set it down on the cart.
+#
+# Why that matters for this project: the hazard bar loads a handful of wrist sensors for a
+# second or two near the grasp, so most of the skin reads empty space for most of the
+# episode. Here the skin is loaded across all six links for the whole episode, and the
+# transport leg sweeps the arm through the middle of the clutter field, where a policy that
+# ignores the skin has somewhere to go wrong.
+#
+# The clutter is placed OUTSIDE the demonstrated path by construction (rejection sampling
+# against the arm's keep-out volumes, see molmo_spaces/tasks/fumehood_clutter.py), so every
+# demonstration is collision-free. Clutter items are ordinary bodies, so a policy that does
+# strike one is already counted by PickTask._accumulate_obstacle_diag.
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinHybridClutterPnPCheckConfig")
+class FrankaSkinHybridClutterPnPCheckConfig(FrankaSkinHybridObstacleCheckConfig):
+    """Preflight: house 1 (red cup) x 2 episodes, 1 worker, maximum clutter, hazard bar always
+    present AND always invisible to RGB.
+
+    Check in the outputs before launching the full run:
+      * the exo video shows the shelving unit, the cabinet and the cart, with items on them;
+      * NO hazard bar is visible in any RGB view (it is there, in group 4, for the skin only);
+      * the log carries '[ClutterPnP] n_clutter=', '[InvisBar]' and '[ClutterPnP] PLACE';
+      * the episode ends with the cup sitting on the cart, not in the gripper;
+      * '[ObstacleDiag] obstacle_contact_steps=0' -- the expert must not touch the clutter.
+    """
+
+    policy_config: BasePolicyConfig = ClutteredPickPlacePolicyConfig()
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ClutteredFumehoodPickPlaceCheckSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood_clutter.xml")] * 2,
+        house_inds=[1],
+        samples_per_house=2,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=False,
+        randomize_lighting=False,
+    )
+    # The place leg roughly doubles episode length -- pick, retract, raise, swing across the bay,
+    # descend, release, retreat, where the obstacle runs stopped at the lift. The inherited
+    # task_horizon of 900 steps already covers that, so it is left alone.
+    num_workers: int = 1
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_clutter_pnp_check"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_clutter_pnp_check"
+
+
+@register_config("FrankaSkinHybridClutterPnPConfig")
+class FrankaSkinHybridClutterPnPConfig(FrankaSkinHybridClutterPnPCheckConfig):
+    """The collection run: 8 wrap-around house indices (1, 25, 49, ... all = 1 mod 24, so the
+    SAME red cup task) x 25 samples = 200 episodes on 4 workers. Wrap-around indices exist
+    purely to parallelise -- the pipeline hands one house to one worker.
+
+    Mix per episode: 9-15 clutter items always; a hazard bar on 60% of episodes, half of those
+    hidden from RGB. Clutter is the constant mid-range load on the whole arm; the bar is the
+    close-range event by the gripper.
+    """
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=ClutteredFumehoodPickPlaceSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood_clutter.xml")] * 170,
+        house_inds=[1, 25, 49, 73, 97, 121, 145, 169],
+        samples_per_house=25,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=False,
+    )
+    # viz_sensor_rgb is ON all the way up this inheritance chain, and it is the single most
+    # expensive setting in the pipeline: 40 extra 256x256 RGB renders plus 40 depth reads per
+    # policy step, purely to produce cosmetic skin-mosaic videos. It adds NOTHING to the h5 (the
+    # key sets are identical with it on and off), but the pipeline holds each episode's full
+    # observation history in RAM until the house finishes saving, so it costs roughly 3 GB per
+    # episode instead of 0.5 GB. That is what OOM-killed 3 of the 8 houses on the v2 invisible-bar
+    # collection. The place leg makes episodes longer here, so leave it off for the real run --
+    # the Check config above keeps it on, which is where you actually want to look at the mosaics.
+    viz_sensor_rgb: bool = False
+    num_workers: int = 4
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_clutter_pnp_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_clutter_pnp_v1"
