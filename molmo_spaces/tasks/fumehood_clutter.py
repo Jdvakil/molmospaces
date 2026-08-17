@@ -404,6 +404,60 @@ class ClutteredPickPlaceTask(EnclosureReachTask):
     across the bay and released, so success is measured at the destination instead.
     """
 
+    def _accumulate_obstacle_diag(self, data, pickup_obj) -> None:
+        """Parent diagnostic, plus WHICH bodies were touched.
+
+        ``[ObstacleDiag] obstacle_contact_steps=17/249`` says the arm hit something but not what,
+        and the answer changes the meaning completely: brushing the cart while setting the object
+        down is expected, clipping the hazard bar is the deflection working at its designed margin,
+        and touching a clutter item would mean the placement rules are not holding. Recording the
+        names costs nothing and turns an ambiguous number into an answer.
+        """
+        super()._accumulate_obstacle_diag(data, pickup_obj)
+        try:
+            model = data.model
+            robot_root = self.env.current_robot.robot_view.base.root_body_id
+            hits = getattr(self, "_obstacle_hit_names", None)
+            if hits is None:
+                hits = self._obstacle_hit_names = {}
+            for c in data.contact:
+                if c.dist > 0:
+                    continue
+                r1 = model.body_rootid[model.geom_bodyid[c.geom1]]
+                r2 = model.body_rootid[model.geom_bodyid[c.geom2]]
+                if (r1 == robot_root) == (r2 == robot_root):
+                    continue
+                other = int(r2 if r1 == robot_root else r1)
+                if other == pickup_obj.body_id:
+                    continue
+                # Static scene geometry (bench, hood, shelf, cabinet, cart) hangs off the world
+                # body, so name it by the geom instead -- "world" would tell you nothing.
+                gid = c.geom2 if r1 == robot_root else c.geom1
+                name = model.body(other).name or ""
+                if not name or name == "world":
+                    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(gid)) or "unnamed"
+                if "floor" in name.lower():
+                    continue
+                hits[name] = hits.get(name, 0) + 1
+        except Exception as e:  # pragma: no cover - a diagnostic must never break a rollout
+            log.debug(f"[ClutterPnP] contact attribution failed: {e}")
+
+    def _maybe_log_obstacle_diag(self, success: bool) -> None:
+        already = getattr(self, "_obstacle_diag_logged", True)
+        super()._maybe_log_obstacle_diag(success)
+        if not already and getattr(self, "_obstacle_diag_logged", False):
+            hits = getattr(self, "_obstacle_hit_names", {}) or {}
+            if hits:
+                worst = sorted(hits.items(), key=lambda kv: -kv[1])
+                clutter = [f"{n}:{c}" for n, c in worst if n.startswith("clut_")]
+                log.info(
+                    "[ClutterPnP] contacts by body: %s%s",
+                    ", ".join(f"{n}:{c}" for n, c in worst),
+                    "   *** CLUTTER TOUCHED: " + ", ".join(clutter) + " ***" if clutter else
+                    "   (no clutter touched)",
+                )
+            self._obstacle_hit_names = {}
+
     def judge_success(self) -> bool:
         try:
             goal = np.asarray(self.config.task_config.pickup_obj_goal_pose[:3], dtype=float)
