@@ -1618,12 +1618,61 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
     GRASP_WORLD_Z_OFFSET_M = 0.0
     PASS_SPEED = 0.045
     APERTURE_EDGE_RESERVE = 0.02
+    RELEASE_CLEARANCE_M = 0.005  # release just above the tray, not pressed into it
+    BOW_SHRINK_STEP_M = 0.02
 
     def __init__(self, config, task) -> None:
         super().__init__(config, task)
         self.behavior_class = "straight"
         self.inbound_deflected = False
         self.outbound_deflected = False
+        self._pact_place_bow_diagnostics = self._empty_bow_diagnostics()
+
+    @staticmethod
+    def _empty_bow_record() -> dict[str, Any]:
+        return {
+            "planned_bow_m": 0.0,
+            "accepted_bow_m": 0.0,
+            "bow_fallback_taken": False,
+        }
+
+    @classmethod
+    def _empty_bow_diagnostics(cls) -> dict[str, dict[str, Any]]:
+        return {
+            "inbound": cls._empty_bow_record(),
+            "outbound": cls._empty_bow_record(),
+        }
+
+    def _record_bow(
+        self,
+        prefix: str,
+        *,
+        planned_bow_m: float,
+        accepted_bow_m: float,
+        bow_fallback_taken: bool,
+    ) -> None:
+        self._pact_place_bow_diagnostics[prefix] = {
+            "planned_bow_m": float(planned_bow_m),
+            "accepted_bow_m": float(accepted_bow_m),
+            "bow_fallback_taken": bool(bow_fallback_taken),
+        }
+
+    def _get_placement_poses(
+        self,
+        grasp_pose_world: np.ndarray,
+        pickup_obj,
+        place_receptacle,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        preplace_pose, place_pose, postplace_pose = super()._get_placement_poses(
+            grasp_pose_world,
+            pickup_obj,
+            place_receptacle,
+        )
+        place_pose = place_pose.copy()
+        place_pose[2, 3] += self.RELEASE_CLEARANCE_M
+        if not self.check_feasible_ik(place_pose):
+            raise ValueError("IK failed for place pose with release clearance")
+        return preplace_pose, place_pose, postplace_pose
 
     @staticmethod
     def _place_pose(position: np.ndarray, rotation: np.ndarray) -> np.ndarray:
@@ -1631,6 +1680,24 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         pose[:3, :3] = rotation
         pose[:3, 3] = position
         return pose
+
+    @staticmethod
+    def _bow_magnitudes(
+        planned_bow_m: float, min_bow_m: float, step_m: float
+    ) -> list[float]:
+        if planned_bow_m + 1e-12 < min_bow_m:
+            return []
+        values: list[float] = []
+        current = float(planned_bow_m)
+        while current + 1e-12 >= min_bow_m:
+            values.append(current)
+            next_value = current - step_m
+            if next_value < min_bow_m - 1e-12:
+                if current > min_bow_m + 1e-12:
+                    values.append(float(min_bow_m))
+                break
+            current = next_value
+        return values
 
     def _bow_segment(
         self,
@@ -1642,6 +1709,12 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
     ) -> tuple[list[TCPMoveSegment], bool]:
         th = getattr(self.task, "scene_params", {}) or {}
         if not th.get("protrusion_present") or "protr_center" not in th:
+            self._record_bow(
+                prefix,
+                planned_bow_m=0.0,
+                accepted_bow_m=0.0,
+                bow_fallback_taken=False,
+            )
             return [segment], False
         center = np.asarray(th["protr_center"], dtype=float)
         half = np.asarray(th["protr_half"], dtype=float)
@@ -1649,9 +1722,21 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         end = segment.end_pose[:3, 3].copy()
         delta_x = float(end[0] - start[0])
         if abs(delta_x) < 1e-6:
+            self._record_bow(
+                prefix,
+                planned_bow_m=0.0,
+                accepted_bow_m=0.0,
+                bow_fallback_taken=False,
+            )
             return [segment], False
         t_cross = float((center[0] - start[0]) / delta_x)
         if not 0.02 < t_cross < 0.98:
+            self._record_bow(
+                prefix,
+                planned_bow_m=0.0,
+                accepted_bow_m=0.0,
+                bow_fallback_taken=False,
+            )
             return [segment], False
         cross = start + t_cross * (end - start)
         obstacle_side = 1.0 if center[1] >= 0.0 else -1.0
@@ -1661,6 +1746,12 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         )
         required_bow = safe_gap - straight_clearance
         if required_bow <= 0.0:
+            self._record_bow(
+                prefix,
+                planned_bow_m=0.0,
+                accepted_bow_m=0.0,
+                bow_fallback_taken=False,
+            )
             return [segment], False
         aperture_width = float(th.get("ap_w", 0.85))
         lateral_limit = max(
@@ -1669,29 +1760,66 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             - envelope_half_y
             - self.APERTURE_EDGE_RESERVE,
         )
-        waypoint_y = float(
-            np.clip(
-                cross[1] - obstacle_side * required_bow,
-                -lateral_limit,
-                lateral_limit,
-            )
-        )
         travel_direction = 1.0 if delta_x > 0.0 else -1.0
         before_x = center[0] - travel_direction * (half[0] + 0.08)
         after_x = center[0] + travel_direction * (half[0] + 0.08)
         t_before = float(np.clip((before_x - start[0]) / delta_x, 0.04, 0.90))
         t_after = float(np.clip((after_x - start[0]) / delta_x, t_before + 0.02, 0.96))
-        before = start + t_before * (end - start)
-        after = start + t_after * (end - start)
-        before[1] = waypoint_y
-        after[1] = waypoint_y
         rotation = segment.end_pose[:3, :3]
-        pose_before = self._place_pose(before, rotation)
-        pose_after = self._place_pose(after, rotation)
+        min_bow = required_bow
+        accepted: tuple[float, float, np.ndarray, np.ndarray, float] | None = None
+        fallback_taken = False
+        for candidate_bow in self._bow_magnitudes(
+            required_bow, min_bow, self.BOW_SHRINK_STEP_M
+        ):
+            waypoint_y = float(
+                np.clip(
+                    cross[1] - obstacle_side * candidate_bow,
+                    -lateral_limit,
+                    lateral_limit,
+                )
+            )
+            actual_bow = float(obstacle_side * (cross[1] - waypoint_y))
+            actual_clearance = straight_clearance + actual_bow
+            if actual_clearance + 1e-9 < safe_gap:
+                fallback_taken = True
+                continue
+            before = start + t_before * (end - start)
+            after = start + t_after * (end - start)
+            before[1] = waypoint_y
+            after[1] = waypoint_y
+            pose_before = self._place_pose(before, rotation)
+            pose_after = self._place_pose(after, rotation)
+            if self.check_feasible_ik(pose_before) and self.check_feasible_ik(
+                pose_after
+            ):
+                accepted = (
+                    float(candidate_bow),
+                    actual_bow,
+                    pose_before,
+                    pose_after,
+                    waypoint_y,
+                )
+                fallback_taken = abs(candidate_bow - required_bow) > 1e-9
+                break
+            fallback_taken = True
+        if accepted is None:
+            raise ValueError(
+                f"IK failed for required {prefix} bow waypoints "
+                f"(min_bow={min_bow:.4f}m, safe_gap={safe_gap:.4f}m)"
+            )
+        _candidate_bow, actual_bow, pose_before, pose_after, waypoint_y = accepted
+        self._record_bow(
+            prefix,
+            planned_bow_m=required_bow,
+            accepted_bow_m=actual_bow,
+            bow_fallback_taken=fallback_taken,
+        )
         log.info(
             f"[PactPlace] {prefix} DEFLECT: straight clearance "
             f"{straight_clearance * 100:.1f}cm -> y={waypoint_y:+.3f}, "
-            f"required gap={safe_gap * 100:.1f}cm"
+            f"required gap={safe_gap * 100:.1f}cm, "
+            f"accepted bow={actual_bow * 100:.1f}cm, fallback={fallback_taken}"
         )
         approach_speed = (
             self.OUTBOUND_PASS_SPEED
@@ -1886,10 +2014,13 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                     map(float, outside_staging_pose[:3, 3])
                 ),
                 "preplace_position_m": list(map(float, preplace_pose[:3, 3])),
+                "place_position_m": list(map(float, place_pose[:3, 3])),
+                "release_clearance_m": float(self.RELEASE_CLEARANCE_M),
                 "outbound_waypoint_positions_m": [
                     list(map(float, segment.end_pose[:3, 3]))
                     for segment in outbound_segments
                 ],
+                "bow_diagnostics": self._pact_place_bow_diagnostics,
             }
         )
         placement_sequence = self._sequence(
@@ -1982,6 +2113,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         self.behavior_class = "straight"
         self.inbound_deflected = False
         self.outbound_deflected = False
+        self._pact_place_bow_diagnostics = self._empty_bow_diagnostics()
         result = super().reset(reset_retries)
         self.target_poses.update(self._pact_place_canonical_target_poses)
         return result
@@ -2092,6 +2224,16 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 "outbound_deflected": bool(self.outbound_deflected),
                 "behavior_class": self.behavior_class,
                 "grasp_diagnostics": self._pact_place_grasp_diagnostics,
+                "bow_diagnostics": self._pact_place_bow_diagnostics,
+                "accepted_bow_m": float(
+                    self._pact_place_bow_diagnostics["outbound"]["accepted_bow_m"]
+                ),
+                "planned_bow_m": float(
+                    self._pact_place_bow_diagnostics["outbound"]["planned_bow_m"]
+                ),
+                "bow_fallback_taken": bool(
+                    self._pact_place_bow_diagnostics["outbound"]["bow_fallback_taken"]
+                ),
                 "terminal_tracking": terminal_tracking,
                 "terminal_robot_environment_contacts": robot_environment_contact_pairs(
                     self.task.env
