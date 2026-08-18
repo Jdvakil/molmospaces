@@ -1532,3 +1532,580 @@ class PactCollisionCorridorPolicyConfig(PickPlannerPolicyConfig):
     def model_post_init(self, __context) -> None:
         super().model_post_init(__context)
         self.policy_cls = PactCollisionCorridorPolicy
+
+
+# -------------------------------------------------------------------------------------- #
+# Forked pick-and-place corridor. The original corridor sampler and expert above remain
+# byte-identical at the class-source level; all stronger-task behavior is additive here.
+# -------------------------------------------------------------------------------------- #
+from molmo_spaces.configs.policy_configs import (  # noqa: E402
+    PickAndPlacePlannerPolicyConfig,
+)
+from molmo_spaces.policy.solvers.object_manipulation.pick_and_place_planner_policy import (  # noqa: E402
+    PickAndPlacePlannerPolicy,
+)
+from molmo_spaces.policy.solvers.object_manipulation.base_object_manipulation_planner_policy import (  # noqa: E402
+    JointMoveSegment,
+    JointMoveSequence,
+    NoopAction,
+)
+from molmo_spaces.tasks.pick_and_place_task import PickAndPlaceTask  # noqa: E402
+from molmo_spaces.utils.pose import pos_quat_to_pose_mat  # noqa: E402
+
+
+class PactPlaceCorridorTask(PickAndPlaceTask):
+    """Upstream support-and-release success criterion plus corridor metadata."""
+
+    def get_obs_scene(self) -> dict[str, Any]:
+        scene = super().get_obs_scene()
+        scene["scene_params"] = getattr(self, "scene_params", {})
+        return scene
+
+
+class PactPlaceCorridorSampler(PactCollisionCorridorSampler):
+    """Forked corridor whose target must be placed on the outside tray."""
+
+    PLACE_RECEPTACLE_NAME = "place_receptacle"
+    PLACE_RECEPTACLE_START_POSE = [0.35, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    PLACE_TRAY_X_BOUNDS = (0.25, 0.45)
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v1"
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th.update(
+            {
+                "pact_place_environment_version": self.PACT_PLACE_ENVIRONMENT_VERSION,
+                "place_receptacle_name": self.PLACE_RECEPTACLE_NAME,
+                "place_receptacle_start_pose": list(self.PLACE_RECEPTACLE_START_POSE),
+                "place_tray_x_bounds_m": list(self.PLACE_TRAY_X_BOUNDS),
+            }
+        )
+        return th
+
+    def _sample_task(self, env: CPUMujocoEnv):
+        task_config = self.config.task_config
+        task_config.place_receptacle_name = self.PLACE_RECEPTACLE_NAME
+        task_config.place_receptacle_start_pose = list(
+            self.PLACE_RECEPTACLE_START_POSE
+        )
+        task_config.referral_expressions.setdefault("place_name", "blue tray")
+        task = super()._sample_task(env)
+        task_config.referral_expressions.setdefault(
+            "pickup_name",
+            task_config.referral_expressions.get("pickup_obj_name", "cup"),
+        )
+        task.__class__ = PactPlaceCorridorTask
+        task._supported_rel_poses = {}
+        task.scene_params = dict(getattr(task, "scene_params", {}) or {})
+        task.scene_params["task_success_criterion"] = (
+            "PickAndPlaceTask.supported_released_receptacle_stable"
+        )
+        return task
+
+
+class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
+    """Obstacle-aware inbound pick and higher-clearance outbound carry/place."""
+
+    INBOUND_ENVELOPE_HALF_Y = 0.11
+    INBOUND_SAFE_GAP = 0.10
+    OUTBOUND_ENVELOPE_HALF_Y = 0.15
+    OUTBOUND_SAFE_GAP = 0.14
+    OUTBOUND_CARRY_RAISE_M = 0.0
+    OUTBOUND_PASS_SPEED = 0.045
+    OUTSIDE_STAGING_X_M = TUBE_X0 - 0.10
+    # Development probes at +/-12 mm did not improve outbound execution. Keep
+    # the validated corridor expert's selected grasp unchanged.
+    GRASP_WORLD_Z_OFFSET_M = 0.0
+    PASS_SPEED = 0.045
+    APERTURE_EDGE_RESERVE = 0.02
+
+    def __init__(self, config, task) -> None:
+        super().__init__(config, task)
+        self.behavior_class = "straight"
+        self.inbound_deflected = False
+        self.outbound_deflected = False
+
+    @staticmethod
+    def _place_pose(position: np.ndarray, rotation: np.ndarray) -> np.ndarray:
+        pose = np.eye(4)
+        pose[:3, :3] = rotation
+        pose[:3, 3] = position
+        return pose
+
+    def _bow_segment(
+        self,
+        segment: TCPMoveSegment,
+        *,
+        prefix: str,
+        envelope_half_y: float,
+        safe_gap: float,
+    ) -> tuple[list[TCPMoveSegment], bool]:
+        th = getattr(self.task, "scene_params", {}) or {}
+        if not th.get("protrusion_present") or "protr_center" not in th:
+            return [segment], False
+        center = np.asarray(th["protr_center"], dtype=float)
+        half = np.asarray(th["protr_half"], dtype=float)
+        start = segment.start_pose[:3, 3].copy()
+        end = segment.end_pose[:3, 3].copy()
+        delta_x = float(end[0] - start[0])
+        if abs(delta_x) < 1e-6:
+            return [segment], False
+        t_cross = float((center[0] - start[0]) / delta_x)
+        if not 0.02 < t_cross < 0.98:
+            return [segment], False
+        cross = start + t_cross * (end - start)
+        obstacle_side = 1.0 if center[1] >= 0.0 else -1.0
+        inner_face_y = center[1] - obstacle_side * half[1]
+        straight_clearance = (
+            obstacle_side * (inner_face_y - cross[1]) - envelope_half_y
+        )
+        required_bow = safe_gap - straight_clearance
+        if required_bow <= 0.0:
+            return [segment], False
+        aperture_width = float(th.get("ap_w", 0.85))
+        lateral_limit = max(
+            0.0,
+            aperture_width / 2
+            - envelope_half_y
+            - self.APERTURE_EDGE_RESERVE,
+        )
+        waypoint_y = float(
+            np.clip(
+                cross[1] - obstacle_side * required_bow,
+                -lateral_limit,
+                lateral_limit,
+            )
+        )
+        travel_direction = 1.0 if delta_x > 0.0 else -1.0
+        before_x = center[0] - travel_direction * (half[0] + 0.08)
+        after_x = center[0] + travel_direction * (half[0] + 0.08)
+        t_before = float(np.clip((before_x - start[0]) / delta_x, 0.04, 0.90))
+        t_after = float(np.clip((after_x - start[0]) / delta_x, t_before + 0.02, 0.96))
+        before = start + t_before * (end - start)
+        after = start + t_after * (end - start)
+        before[1] = waypoint_y
+        after[1] = waypoint_y
+        rotation = segment.end_pose[:3, :3]
+        pose_before = self._place_pose(before, rotation)
+        pose_after = self._place_pose(after, rotation)
+        log.info(
+            f"[PactPlace] {prefix} DEFLECT: straight clearance "
+            f"{straight_clearance * 100:.1f}cm -> y={waypoint_y:+.3f}, "
+            f"required gap={safe_gap * 100:.1f}cm"
+        )
+        approach_speed = (
+            self.OUTBOUND_PASS_SPEED
+            if prefix == "outbound"
+            else self.policy_config.speed_fast
+        )
+        pass_speed = (
+            self.OUTBOUND_PASS_SPEED if prefix == "outbound" else self.PASS_SPEED
+        )
+        exit_speed = (
+            self.OUTBOUND_PASS_SPEED
+            if prefix == "outbound"
+            else self.policy_config.speed_slow
+        )
+        return (
+            [
+                TCPMoveSegment(
+                    name=f"{prefix}_approach",
+                    start_pose=segment.start_pose,
+                    end_pose=pose_before,
+                    speed=approach_speed,
+                ),
+                TCPMoveSegment(
+                    name=f"{prefix}_pass",
+                    start_pose=pose_before,
+                    end_pose=pose_after,
+                    speed=pass_speed,
+                ),
+                TCPMoveSegment(
+                    name=f"{prefix}_exit",
+                    start_pose=pose_after,
+                    end_pose=segment.end_pose,
+                    speed=exit_speed,
+                ),
+            ],
+            True,
+        )
+
+    def _sequence(
+        self, segments: list[TCPMoveSegment], *, holding: bool
+    ) -> TCPMoveSequence:
+        robot_view = self.task.env.current_robot.robot_view
+        return TCPMoveSequence(
+            robot_view,
+            self._tcp_to_jp_fn,
+            self.policy_config.move_settle_time,
+            is_holding_object=holding,
+            gripper_empty_threshold=self.policy_config.gripper_empty_threshold,
+            tcp_pos_err_threshold=self.policy_config.tcp_pos_err_threshold,
+            tcp_rot_err_threshold=self.policy_config.tcp_rot_err_threshold,
+            move_segments=segments,
+        )
+
+    @staticmethod
+    def _renamed(segment: TCPMoveSegment, name: str) -> TCPMoveSegment:
+        return TCPMoveSegment(
+            name=name,
+            start_pose=segment.start_pose,
+            end_pose=segment.end_pose,
+            speed=segment.speed,
+        )
+
+    def _compute_trajectory(self) -> list[ActionPrimitive]:
+        # Scripted two-phase fallback: keep the validated corridor pick path at
+        # the primitive level, then plan placement from its lift pose. The
+        # generic pick-and-place approach lost Cup_10 before a 1 cm lift in the
+        # development screen.
+        pick_helper = PactCollisionCorridorPolicy(self.config, self.task)
+        pick_primitives = pick_helper._compute_trajectory()
+        inbound = pick_primitives[1]
+        inbound_pre = inbound._move_segments[-2]
+        stock_inbound_grasp = inbound._move_segments[-1]
+        adjusted_grasp_pose = stock_inbound_grasp.end_pose.copy()
+        adjusted_grasp_pose[2, 3] += self.GRASP_WORLD_Z_OFFSET_M
+        if not self.check_feasible_ik(adjusted_grasp_pose):
+            raise ValueError("IK failed for vertically adjusted grasp pose")
+        inbound_grasp = TCPMoveSegment(
+            name=stock_inbound_grasp.name,
+            start_pose=stock_inbound_grasp.start_pose,
+            end_pose=adjusted_grasp_pose,
+            speed=stock_inbound_grasp.speed,
+        )
+        robot_view = self.task.env.current_robot.robot_view
+        pick_primitives[1] = TCPMoveSequence(
+            robot_view,
+            self._tcp_to_jp_fn,
+            self.policy_config.move_settle_time,
+            gripper_empty_threshold=self.policy_config.gripper_empty_threshold,
+            tcp_pos_err_threshold=self.policy_config.tcp_pos_err_threshold,
+            tcp_rot_err_threshold=self.policy_config.tcp_rot_err_threshold,
+            move_segments=inbound._move_segments[:-1] + [inbound_grasp],
+        )
+        stock_lift = pick_primitives[3]._move_segments[-1]
+        adjusted_lift_pose = stock_lift.end_pose.copy()
+        adjusted_lift_pose[2, 3] += self.GRASP_WORLD_Z_OFFSET_M
+        if not self.check_feasible_ik(adjusted_lift_pose):
+            raise ValueError("IK failed for vertically adjusted lift pose")
+        lift = TCPMoveSegment(
+            name=stock_lift.name,
+            start_pose=adjusted_grasp_pose,
+            end_pose=adjusted_lift_pose,
+            speed=stock_lift.speed,
+        )
+        pick_primitives[3] = self._sequence([lift], holding=True)
+        self.inbound_deflected = pick_helper.behavior_class == "deflect"
+
+        manager = self.task.env.object_managers[self.task.env.current_batch_index]
+        task_config = self.config.task_config
+        pickup = manager.get_object_by_name(task_config.pickup_obj_name)
+        pickup_pose = pos_quat_to_pose_mat(pickup.position, pickup.quat)
+        self._pact_place_grasp_diagnostics = {
+            "stock_grasp_world_position_m": list(
+                map(float, stock_inbound_grasp.end_pose[:3, 3])
+            ),
+            "adjusted_grasp_world_position_m": list(
+                map(float, adjusted_grasp_pose[:3, 3])
+            ),
+            "stock_grasp_object_local_position_m": list(
+                map(
+                    float,
+                    (np.linalg.inv(pickup_pose) @ stock_inbound_grasp.end_pose)[:3, 3],
+                )
+            ),
+            "adjusted_grasp_object_local_position_m": list(
+                map(float, (np.linalg.inv(pickup_pose) @ adjusted_grasp_pose)[:3, 3])
+            ),
+            "world_z_offset_m": float(self.GRASP_WORLD_Z_OFFSET_M),
+        }
+        receptacle = manager.get_object_by_name(task_config.place_receptacle_name)
+        preplace_pose, place_pose, postplace_pose = self._get_placement_poses(
+            inbound_grasp.end_pose,
+            pickup,
+            receptacle,
+        )
+        carry_pose = lift.end_pose.copy()
+        carry_pose[2, 3] += self.OUTBOUND_CARRY_RAISE_M
+        if not self.check_feasible_ik(carry_pose):
+            raise ValueError("IK failed for outbound carry-raise pose")
+        carry_raise = []
+        if self.OUTBOUND_CARRY_RAISE_M > 0.0:
+            carry_raise.append(
+                TCPMoveSegment(
+                    name="outbound_lift",
+                    start_pose=lift.end_pose,
+                    end_pose=carry_pose,
+                    speed=self.policy_config.speed_slow,
+                )
+            )
+        outside_staging_pose = carry_pose.copy()
+        outside_staging_pose[0, 3] = self.OUTSIDE_STAGING_X_M
+        outside_staging_pose[1, 3] = preplace_pose[1, 3]
+        if not self.check_feasible_ik(outside_staging_pose):
+            raise ValueError("IK failed for outside staging pose")
+        corridor_transfer = TCPMoveSegment(
+            name="outbound_staging",
+            start_pose=carry_pose,
+            end_pose=outside_staging_pose,
+            speed=self.policy_config.speed_fast,
+        )
+        preplace_transition = TCPMoveSegment(
+            name="preplace",
+            start_pose=outside_staging_pose,
+            end_pose=preplace_pose,
+            speed=self.policy_config.speed_fast,
+        )
+        place = TCPMoveSegment(
+            name="placement_descent",
+            start_pose=preplace_pose,
+            end_pose=place_pose,
+            speed=self.policy_config.speed_slow,
+        )
+        self._pact_place_canonical_target_poses = {
+            "pregrasp": inbound_pre.end_pose,
+            "grasp": inbound_grasp.end_pose,
+            "lift": lift.end_pose,
+            "carry": carry_pose,
+            "outside_staging": outside_staging_pose,
+            "preplace": preplace_pose,
+            "place": place_pose,
+            "postplace": postplace_pose,
+        }
+        outbound_segments, self.outbound_deflected = self._bow_segment(
+            corridor_transfer,
+            prefix="outbound",
+            envelope_half_y=self.OUTBOUND_ENVELOPE_HALF_Y,
+            safe_gap=self.OUTBOUND_SAFE_GAP,
+        )
+        self._pact_place_grasp_diagnostics.update(
+            {
+                "carry_position_m": list(map(float, carry_pose[:3, 3])),
+                "outside_staging_position_m": list(
+                    map(float, outside_staging_pose[:3, 3])
+                ),
+                "preplace_position_m": list(map(float, preplace_pose[:3, 3])),
+                "outbound_waypoint_positions_m": [
+                    list(map(float, segment.end_pose[:3, 3]))
+                    for segment in outbound_segments
+                ],
+            }
+        )
+        placement_sequence = self._sequence(
+            carry_raise + outbound_segments + [preplace_transition, place],
+            holding=True,
+        )
+        release = GripperAction(
+            robot_view, True, self.policy_config.gripper_open_duration
+        )
+        retreat = self._sequence(
+            [
+                TCPMoveSegment(
+                    name="retreat",
+                    start_pose=place_pose,
+                    end_pose=postplace_pose,
+                    speed=self.policy_config.speed_fast,
+                )
+            ],
+            holding=False,
+        )
+        primitives = pick_primitives + [
+            placement_sequence,
+            release,
+            retreat,
+            NoopAction(robot_view, 2.0),
+        ]
+        if self.inbound_deflected or self.outbound_deflected:
+            self.behavior_class = "scripted_two_phase_bidirectional_deflect"
+        else:
+            self.behavior_class = "scripted_two_phase_straight"
+        return primitives
+
+    @staticmethod
+    def _traversal_phase(policy_phase: str) -> str:
+        if policy_phase.startswith("inbound") or policy_phase in {
+            "gripper-open",
+            "pregrasp",
+            "grasp",
+            "grasp_settle",
+            "gripper-close",
+        }:
+            return "inbound"
+        if policy_phase.startswith("outbound") or policy_phase in {
+            "lift",
+            "preplace",
+        }:
+            return "outbound"
+        if policy_phase.startswith("placement") or policy_phase in {
+            "place",
+            "retreat",
+            "go_home",
+        }:
+            return "placement"
+        return "other"
+
+    def get_all_phases(self):
+        phases = super().get_all_phases()
+        phase_names = (
+            "inbound_approach",
+            "inbound_pass",
+            "inbound_exit",
+            "inbound_grasp",
+            "grasp_settle",
+            "outbound_lift",
+            "outbound_approach",
+            "outbound_pass",
+            "outbound_exit",
+            "placement_descent",
+        )
+        next_id = max(phases.values()) + 1
+        phases.update({name: next_id + index for index, name in enumerate(phase_names)})
+        return phases
+
+    def reset(self, reset_retries: bool = True):
+        from molmo_spaces.tasks.pact_place_contact_audit import (
+            PactPlaceContactAudit,
+        )
+
+        if reset_retries or not hasattr(self, "_pact_place_contact_audit"):
+            self._pact_place_contact_audit = PactPlaceContactAudit()
+            self._pact_place_control_step = 0
+            self._cup_retrieved_outside_aperture = False
+            self._cup_lifted = False
+            self._pickup_start_z = None
+            self._pickup_max_z = None
+            self._pickup_final_position = None
+            self._gripper_width_min = None
+            self._gripper_width_max = None
+        self.task._contact_audit_hook = self._pact_place_contact_audit
+        self.behavior_class = "straight"
+        self.inbound_deflected = False
+        self.outbound_deflected = False
+        result = super().reset(reset_retries)
+        self.target_poses.update(self._pact_place_canonical_target_poses)
+        return result
+
+    def _update_manipulation_progress(self) -> None:
+        try:
+            task_config = self.task.config.task_config
+            manager = self.task.env.object_managers[
+                self.task.env.current_batch_index
+            ]
+            pickup = manager.get_object_by_name(task_config.pickup_obj_name)
+            if self._pickup_start_z is None:
+                self._pickup_start_z = float(pickup.position[2])
+            pickup_z = float(pickup.position[2])
+            self._pickup_max_z = (
+                pickup_z
+                if self._pickup_max_z is None
+                else max(self._pickup_max_z, pickup_z)
+            )
+            self._pickup_final_position = list(map(float, pickup.position))
+            self._cup_lifted |= bool(
+                pickup_z >= self._pickup_start_z + 0.01
+            )
+            self._cup_retrieved_outside_aperture |= bool(
+                self._cup_lifted and float(pickup.position[0]) < TUBE_X0 - 0.03
+            )
+            robot_view = self.task.env.current_robot.robot_view
+            gripper_id = robot_view.get_gripper_movegroup_ids()[0]
+            gripper = robot_view.get_gripper(gripper_id)
+            width = float(gripper.inter_finger_dist)
+            self._gripper_width_min = (
+                width
+                if self._gripper_width_min is None
+                else min(self._gripper_width_min, width)
+            )
+            self._gripper_width_max = (
+                width
+                if self._gripper_width_max is None
+                else max(self._gripper_width_max, width)
+            )
+        except Exception:
+            return
+
+    def get_action(self, observation):
+        policy_phase = self.get_phase()
+        self._pact_place_contact_audit.set_phase(
+            self._traversal_phase(policy_phase), policy_phase
+        )
+        self._pact_place_contact_audit.observe(
+            self.task.env, self._pact_place_control_step
+        )
+        action = super().get_action(observation)
+        self._update_manipulation_progress()
+        self._pact_place_control_step += 1
+        return action
+
+    def get_info(self):
+        from molmo_spaces.tasks.pact_contact_audit import (
+            robot_environment_contact_pairs,
+        )
+
+        policy_phase = self.get_phase()
+        self._pact_place_contact_audit.set_phase(
+            self._traversal_phase(policy_phase), policy_phase
+        )
+        self._pact_place_contact_audit.observe(
+            self.task.env, self._pact_place_control_step
+        )
+        self._update_manipulation_progress()
+        info = super().get_info()
+        terminal_tracking: dict[str, Any] = {
+            "sequential_ik_failures": int(self.sequential_ik_failures),
+            "action_index": int(self.action_idx),
+        }
+        if self.action_idx < len(self.action_primitives):
+            primitive = self.action_primitives[self.action_idx]
+            terminal_tracking["action_primitive"] = type(primitive).__name__
+            if isinstance(primitive, TCPMoveSequence) and primitive.move_seg_idx is not None:
+                target_pose = primitive.get_current_target_pose()
+                gripper_id = self.robot_view.get_gripper_movegroup_ids()[0]
+                actual_pose = self.robot_view.get_gripper(gripper_id).leaf_frame_to_world
+                terminal_tracking.update(
+                    {
+                        "move_segment_index": int(primitive.move_seg_idx),
+                        "target_position_m": list(map(float, target_pose[:3, 3])),
+                        "actual_position_m": list(map(float, actual_pose[:3, 3])),
+                        "position_error_m": float(
+                            np.linalg.norm(target_pose[:3, 3] - actual_pose[:3, 3])
+                        ),
+                    }
+                )
+        place_metrics = self.task.get_info()[0]
+        info.update(
+            {
+                "pact_contact_audit": self._pact_place_contact_audit.summary(),
+                "grasp_phase_success": bool(
+                    self._cup_retrieved_outside_aperture
+                ),
+                "cup_lifted_one_cm": bool(self._cup_lifted),
+                "pickup_start_z_m": self._pickup_start_z,
+                "pickup_max_z_m": self._pickup_max_z,
+                "pickup_final_position_m": self._pickup_final_position,
+                "gripper_width_min_m": self._gripper_width_min,
+                "gripper_width_max_m": self._gripper_width_max,
+                "place_phase_success": bool(place_metrics["success"]),
+                "place_metrics": place_metrics,
+                "inbound_deflected": bool(self.inbound_deflected),
+                "outbound_deflected": bool(self.outbound_deflected),
+                "behavior_class": self.behavior_class,
+                "grasp_diagnostics": self._pact_place_grasp_diagnostics,
+                "terminal_tracking": terminal_tracking,
+                "terminal_robot_environment_contacts": robot_environment_contact_pairs(
+                    self.task.env
+                ),
+            }
+        )
+        return info
+
+
+class PactPlaceCorridorPolicyConfig(PickAndPlacePlannerPolicyConfig):
+    """Wire the composed expert; rollout-start failures remain terminal."""
+
+    max_retries: int = 0
+
+    def model_post_init(self, __context) -> None:
+        super().model_post_init(__context)
+        self.policy_cls = PactPlaceCorridorPolicy
