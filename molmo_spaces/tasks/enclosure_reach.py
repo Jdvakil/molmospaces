@@ -13,6 +13,9 @@ by construction (independent draws; cell only gates protrusion presence and intr
 from __future__ import annotations
 
 import logging
+import sys
+from collections import deque
+from pathlib import Path
 from typing import Any
 
 import mujoco
@@ -1550,6 +1553,7 @@ from molmo_spaces.policy.solvers.object_manipulation.base_object_manipulation_pl
     NoopAction,
 )
 from molmo_spaces.tasks.pick_and_place_task import PickAndPlaceTask  # noqa: E402
+from molmo_spaces.utils.linalg_utils import transform_to_twist, twist_to_transform  # noqa: E402
 from molmo_spaces.utils.pose import pos_quat_to_pose_mat  # noqa: E402
 
 
@@ -1603,6 +1607,190 @@ class PactPlaceCorridorSampler(PactCollisionCorridorSampler):
         return task
 
 
+class PactPlaceCorridorV2Sampler(PactPlaceCorridorSampler):
+    """Same corridor; receptacle translated (and optionally shrunk) out of the
+    arm's inbound/outbound sweep. Scene XML is ``pact_place_corridor_v2.xml``.
+    Constants are filled from the A0 reachability sweep.
+    """
+
+    PLACE_RECEPTACLE_START_POSE = [0.35, 0.32, 0.0, 1.0, 0.0, 0.0, 0.0]
+    PLACE_TRAY_X_BOUNDS = (0.25, 0.45)
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v2"
+
+
+class PactPlaceCorridorV3Sampler(PactPlaceCorridorV2Sampler):
+    """v2 tray and corridor; four immovable shelf-clutter mocap boxes.
+
+    Slot XY is filled from the A0 clutter sweep. Jitter is drawn per row from
+    ``task_seed_u64`` and is independent of ``intrusion_side``.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v3"
+    CLUTTER_BODY_NAMES = (
+        "pact_clutter_l0",
+        "pact_clutter_l1",
+        "pact_clutter_r0",
+        "pact_clutter_r1",
+    )
+    CLUTTER_SLOT_NOMINAL_XY = {
+        "l0": (0.70, 0.34),
+        "l1": (0.75, 0.34),
+        "r0": (0.70, -0.34),
+        "r1": (0.75, -0.34),
+    }
+    CLUTTER_HEIGHT_M = 0.10
+    CLUTTER_HALF_X_M = 0.025
+    CLUTTER_HALF_Y_M = 0.05
+    CLUTTER_TOP_Z_M = 0.82
+
+    def _clutter_slots(self, row: dict | None) -> dict[str, dict[str, Any]]:
+        height = float(self.CLUTTER_HEIGHT_M)
+        half_x = float(self.CLUTTER_HALF_X_M)
+        half_y = float(self.CLUTTER_HALF_Y_M)
+        half_z = height / 2.0
+        x_jitter = (row or {}).get("clutter_x_jitter_m") or {}
+        y_jitter = (row or {}).get("clutter_y_jitter_m") or {}
+        slots: dict[str, dict[str, Any]] = {}
+        for slot, (nx, ny) in self.CLUTTER_SLOT_NOMINAL_XY.items():
+            jx = float(x_jitter.get(slot, 0.0))
+            jy = float(y_jitter.get(slot, 0.0))
+            center = [float(nx + jx), float(ny + jy), float(SHELF_TOP_Z + half_z)]
+            slots[slot] = {
+                "body": f"pact_clutter_{slot}",
+                "nominal_xy_m": [float(nx), float(ny)],
+                "jitter_xy_m": [jx, jy],
+                "center_m": center,
+                "half_m": [half_x, half_y, half_z],
+            }
+        return slots
+
+    def _set_clutter_geom_size(self, env, slots: dict[str, dict[str, Any]]) -> None:
+        model = env.current_model
+        for slot, spec in slots.items():
+            geom = model.geom(f"pact_clutter_{slot}_g")
+            model.geom_size[int(geom.id)] = np.asarray(spec["half_m"], dtype=float)
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        slots = self._clutter_slots(self._pact_manifest_row)
+        th.update(
+            {
+                "pact_place_environment_version": self.PACT_PLACE_ENVIRONMENT_VERSION,
+                "pact_clutter": slots,
+                "pact_clutter_height_m": float(self.CLUTTER_HEIGHT_M),
+                "pact_clutter_half_x_m": float(self.CLUTTER_HALF_X_M),
+                "pact_clutter_half_y_m": float(self.CLUTTER_HALF_Y_M),
+                "pact_clutter_top_z_m": float(self.CLUTTER_TOP_Z_M),
+            }
+        )
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        slots = th.get("pact_clutter") or self._clutter_slots(self._pact_manifest_row)
+        for spec in slots.values():
+            body = spec["body"]
+            if any(
+                forbidden in body
+                for forbidden in ("cavity_obj_", "pact_intrusion_", "place_receptacle")
+            ):
+                raise ValueError(f"illegal clutter body name {body!r}")
+            self._mocap_set(env, body, spec["center_m"])
+        if slots:
+            self._set_clutter_geom_size(env, slots)
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceTCPMoveSequence(TCPMoveSequence):
+    """Place-corridor TCP sequence with a repaired empty-gripper detector.
+
+    Upstream ``TCPMoveSequence.check_failure`` is unchanged. This subclass is
+    constructed only from ``PactPlaceCorridorPolicy._sequence``.
+
+    Fix A: the empty-gripper check is a drop detector for transport. It is not
+    armed on ``placement_descent``, whose next primitive is the scripted release.
+
+    Fix B: during holding transport, the empty predicate must hold for
+    ``EMPTY_GRIPPER_PERSIST_STEPS`` consecutive control steps. This is not a
+    threshold change; ``gripper_empty_threshold`` stays at the policy default
+    (0.002 m). The measured glitch is a one-step 8.5 mm → 0.00 mm sample.
+    """
+
+    EMPTY_GRIPPER_PERSIST_STEPS = 3
+    EMPTY_GRIPPER_DISARMED_SEGMENTS = frozenset({"placement_descent"})
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._empty_gripper_streak = 0
+
+    def reset(self) -> None:
+        super().reset()
+        self._empty_gripper_streak = 0
+
+    def _current_move_segment_name(self) -> str | None:
+        if not self.move_segments:
+            return None
+        if self.move_seg_idx is None:
+            return self.move_segments[0].name
+        if self.move_seg_idx < len(self.move_segments):
+            return self.move_segments[self.move_seg_idx].name
+        return self.move_segments[-1].name
+
+    def _empty_gripper_sample(self) -> bool:
+        if not self.is_holding_object:
+            return False
+        gripper_mg_id = self.robot_view.get_gripper_movegroup_ids()[0]
+        gripper = self.robot_view.get_gripper(gripper_mg_id)
+        return (
+            gripper.inter_finger_dist
+            < gripper.inter_finger_dist_range[0] + self.gripper_empty_threshold
+        )
+
+    def _persistent_empty_gripper_failure(self) -> bool:
+        disarmed = (
+            self._current_move_segment_name() in self.EMPTY_GRIPPER_DISARMED_SEGMENTS
+        )
+        if disarmed or not self.is_holding_object:
+            self._empty_gripper_streak = 0
+            return False
+        if self._empty_gripper_sample():
+            self._empty_gripper_streak += 1
+            if self._empty_gripper_streak >= self.EMPTY_GRIPPER_PERSIST_STEPS:
+                gripper_mg_id = self.robot_view.get_gripper_movegroup_ids()[0]
+                gripper = self.robot_view.get_gripper(gripper_mg_id)
+                log.info(
+                    "Object is not in grasp! "
+                    f"{gripper.inter_finger_dist:.05f} < "
+                    f"{gripper.inter_finger_dist_range[0] + self.gripper_empty_threshold:.05f} "
+                    f"for {self._empty_gripper_streak} consecutive steps"
+                )
+                return True
+            return False
+        self._empty_gripper_streak = 0
+        return False
+
+    def _tcp_tracking_failure(self) -> bool:
+        if self.move_seg_idx is None:
+            return False
+        from scipy.spatial.transform import Rotation as R
+
+        curr_target_pose = self.get_current_target_pose()
+        gripper_mg_id = self.robot_view.get_gripper_movegroup_ids()[0]
+        gripper = self.robot_view.get_gripper(gripper_mg_id)
+        trf = np.linalg.inv(gripper.leaf_frame_to_world) @ curr_target_pose
+        pos_err = np.linalg.norm(trf[:3, 3])
+        rot_err = R.from_matrix(trf[:3, :3]).magnitude()
+        return bool(
+            pos_err > self.tcp_pos_err_threshold
+            or rot_err > self.tcp_rot_err_threshold
+        )
+
+    def check_failure(self) -> bool:
+        if self._persistent_empty_gripper_failure():
+            return True
+        return self._tcp_tracking_failure()
+
+
 class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
     """Obstacle-aware inbound pick and higher-clearance outbound carry/place."""
 
@@ -1621,6 +1809,10 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
     PASS_SPEED = 0.045
     APERTURE_EDGE_RESERVE = 0.02
     RELEASE_CLEARANCE_M = 0.005  # release just above the tray, not pressed into it
+    # Bound the outbound_approach twist so IK tracking stays in the carry plane.
+    # Rows 4 and 17 aborted on 8.8 cm of vertical deviation across one long segment.
+    OUTBOUND_APPROACH_MAX_STEP_M = 0.04
+    SETTLE_WINDOW_STEPS = 25
 
     def __init__(self, config, task) -> None:
         super().__init__(config, task)
@@ -1816,7 +2008,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         self, segments: list[TCPMoveSegment], *, holding: bool
     ) -> TCPMoveSequence:
         robot_view = self.task.env.current_robot.robot_view
-        return TCPMoveSequence(
+        return PactPlaceTCPMoveSequence(
             robot_view,
             self._tcp_to_jp_fn,
             self.policy_config.move_settle_time,
@@ -1835,6 +2027,38 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             end_pose=segment.end_pose,
             speed=segment.speed,
         )
+
+    @staticmethod
+    def _interpolate_pose(start: np.ndarray, end: np.ndarray, t: float) -> np.ndarray:
+        lin_vel, ang_vel = transform_to_twist(np.linalg.inv(start) @ end)
+        return start @ twist_to_transform(lin_vel * float(t), ang_vel * float(t))
+
+    @classmethod
+    def _subdivide_tcp_segment(
+        cls, segment: TCPMoveSegment, max_step_m: float
+    ) -> list[TCPMoveSegment]:
+        dist = float(
+            np.linalg.norm(segment.end_pose[:3, 3] - segment.start_pose[:3, 3])
+        )
+        n_pieces = max(1, int(np.ceil(dist / max_step_m - 1e-12)))
+        if n_pieces == 1:
+            return [segment]
+        pieces: list[TCPMoveSegment] = []
+        previous = segment.start_pose.copy()
+        for index in range(1, n_pieces + 1):
+            pose = cls._interpolate_pose(
+                segment.start_pose, segment.end_pose, index / n_pieces
+            )
+            pieces.append(
+                TCPMoveSegment(
+                    name=segment.name,
+                    start_pose=previous,
+                    end_pose=pose,
+                    speed=segment.speed,
+                )
+            )
+            previous = pose
+        return pieces
 
     def _compute_trajectory(self) -> list[ActionPrimitive]:
         # Scripted two-phase fallback: keep the validated corridor pick path at
@@ -1961,6 +2185,13 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             envelope_half_y=self.OUTBOUND_ENVELOPE_HALF_Y,
             safe_gap=self.OUTBOUND_SAFE_GAP,
         )
+        if outbound_segments:
+            outbound_segments = [
+                *self._subdivide_tcp_segment(
+                    outbound_segments[0], self.OUTBOUND_APPROACH_MAX_STEP_M
+                ),
+                *outbound_segments[1:],
+            ]
         self._pact_place_grasp_diagnostics.update(
             {
                 "carry_position_m": list(map(float, carry_pose[:3, 3])),
@@ -2019,10 +2250,13 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             return "inbound"
         if policy_phase.startswith("outbound") or policy_phase in {
             "lift",
-            "preplace",
         }:
             return "outbound"
+        # preplace is the deliberate approach to the tray. Exempt receptacle
+        # contact only during placement; treat preplace as placement so the
+        # existing phase_frames_with_contact buckets can enforce that rule.
         if policy_phase.startswith("placement") or policy_phase in {
+            "preplace",
             "place",
             "retreat",
             "go_home",
@@ -2061,6 +2295,13 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             self._pickup_start_z = None
             self._pickup_max_z = None
             self._pickup_final_position = None
+            self._pickup_start_position = None
+            self._pickup_start_quat = None
+            self._pickup_final_quat = None
+            self._object_position_window = deque(maxlen=self.SETTLE_WINDOW_STEPS)
+            self._pact_place_trajectory = []
+            self._pact_abort_branch_steps = []
+            self._pact_abort_branch_terminal = None
             self._gripper_width_min = None
             self._gripper_width_max = None
         self.task._contact_audit_hook = self._pact_place_contact_audit
@@ -2088,6 +2329,11 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 else max(self._pickup_max_z, pickup_z)
             )
             self._pickup_final_position = list(map(float, pickup.position))
+            self._pickup_final_quat = list(map(float, pickup.quat))
+            if self._pickup_start_position is None:
+                self._pickup_start_position = list(self._pickup_final_position)
+                self._pickup_start_quat = list(self._pickup_final_quat)
+            self._object_position_window.append(list(self._pickup_final_position))
             self._cup_lifted |= bool(
                 pickup_z >= self._pickup_start_z + 0.01
             )
@@ -2111,6 +2357,117 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         except Exception:
             return
 
+    def _pact_abort_recorder(self):
+        scripts = Path(__file__).resolve().parents[4] / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from pact_place_abort_branch_telemetry import (  # noqa: E402
+            record_on_policy,
+            terminal_tracking_fields,
+            write_sidecar,
+        )
+
+        return record_on_policy, terminal_tracking_fields, write_sidecar
+
+    def _check_for_failures(self) -> bool:
+        failed = super()._check_for_failures()
+        try:
+            record_on_policy, _, _ = self._pact_abort_recorder()
+            record_on_policy(self, failed)
+        except Exception:
+            pass
+        return failed
+
+    def _handle_failure(self) -> dict[str, Any]:
+        try:
+            record_on_policy, _, _ = self._pact_abort_recorder()
+            if getattr(self, "_pact_abort_branch_terminal", None) is None:
+                snapshot = record_on_policy(self, True)
+                if (
+                    int(self.sequential_ik_failures)
+                    >= int(self.policy_config.max_sequential_ik_failures)
+                ):
+                    snapshot["branch"] = "ik_cascade"
+                    self._pact_abort_branch_terminal = snapshot
+        except Exception:
+            pass
+        return super()._handle_failure()
+
+    def _record_place_trajectory_step(self) -> None:
+        tcp_pos = None
+        try:
+            gripper_id = self.robot_view.get_gripper_movegroup_ids()[0]
+            tcp = self.robot_view.get_gripper(gripper_id).leaf_frame_to_world
+            tcp_pos = list(map(float, tcp[:3, 3]))
+        except Exception:
+            tcp_pos = None
+        self._pact_place_trajectory.append(
+            {
+                "step": int(self._pact_place_control_step),
+                "sim_time_s": float(self.task.env.current_data.time),
+                "policy_phase": str(self.get_phase()),
+                "tcp_position_m": tcp_pos,
+                "object_position_m": (
+                    None
+                    if self._pickup_final_position is None
+                    else list(self._pickup_final_position)
+                ),
+                "object_quat_xyzw": (
+                    None
+                    if self._pickup_final_quat is None
+                    else list(self._pickup_final_quat)
+                ),
+                "qpos": [
+                    float(value)
+                    for value in np.asarray(self.task.env.current_data.qpos).tolist()
+                ],
+            }
+        )
+
+    def _endpoint_scalars(self) -> dict[str, Any]:
+        end = self._pickup_final_position
+        start_z = self._pickup_start_z
+        end_z = None if end is None else float(end[2])
+        window = list(self._object_position_window)
+        settle = None
+        if len(window) >= 2:
+            settle = float(
+                np.linalg.norm(np.asarray(window[-1], dtype=float) - np.asarray(window[0], dtype=float))
+            )
+        receptacle_distance = None
+        try:
+            if end is not None:
+                manager = self.task.env.object_managers[
+                    self.task.env.current_batch_index
+                ]
+                receptacle = manager.get_object_by_name(
+                    self.task.config.task_config.place_receptacle_name
+                )
+                receptacle_distance = float(
+                    np.linalg.norm(
+                        np.asarray(end, dtype=float)
+                        - np.asarray(receptacle.position, dtype=float)
+                    )
+                )
+        except Exception:
+            receptacle_distance = None
+        return {
+            "object_start_position_m": self._pickup_start_position,
+            "object_start_quat_xyzw": self._pickup_start_quat,
+            "object_end_position_m": end,
+            "object_end_quat_xyzw": self._pickup_final_quat,
+            "object_max_z_m": self._pickup_max_z,
+            "object_height_above_start_at_terminal_m": (
+                None
+                if start_z is None or end_z is None
+                else float(end_z - start_z)
+            ),
+            "object_to_receptacle_distance_m": receptacle_distance,
+            "settle_window_steps": int(self.SETTLE_WINDOW_STEPS),
+            "settle_displacement_m": settle,
+            "endpoint_values_emitted_during_compaction": True,
+        }
+
     def get_action(self, observation):
         policy_phase = self.get_phase()
         self._pact_place_contact_audit.set_phase(
@@ -2121,12 +2478,13 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         )
         action = super().get_action(observation)
         self._update_manipulation_progress()
+        self._record_place_trajectory_step()
         self._pact_place_control_step += 1
         return action
 
     def get_info(self):
-        from molmo_spaces.tasks.pact_contact_audit import (
-            robot_environment_contact_pairs,
+        from molmo_spaces.tasks.pact_place_contact_audit import (
+            place_environment_contact_pairs,
         )
 
         policy_phase = self.get_phase()
@@ -2137,6 +2495,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             self.task.env, self._pact_place_control_step
         )
         self._update_manipulation_progress()
+        self._record_place_trajectory_step()
         info = super().get_info()
         terminal_tracking: dict[str, Any] = {
             "sequential_ik_failures": int(self.sequential_ik_failures),
@@ -2159,7 +2518,14 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                         ),
                     }
                 )
+        try:
+            _, terminal_tracking_fields, write_sidecar = self._pact_abort_recorder()
+            terminal_tracking.update(terminal_tracking_fields(self))
+            write_sidecar(self)
+        except Exception:
+            pass
         place_metrics = self.task.get_info()[0]
+        endpoint_scalars = self._endpoint_scalars()
         info.update(
             {
                 "pact_contact_audit": self._pact_place_contact_audit.summary(),
@@ -2189,9 +2555,11 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                     self._pact_place_bow_diagnostics["outbound"]["bow_fallback_taken"]
                 ),
                 "terminal_tracking": terminal_tracking,
-                "terminal_robot_environment_contacts": robot_environment_contact_pairs(
+                "terminal_robot_environment_contacts": place_environment_contact_pairs(
                     self.task.env
                 ),
+                "endpoint_scalars": endpoint_scalars,
+                "trajectory": list(self._pact_place_trajectory),
             }
         )
         return info
