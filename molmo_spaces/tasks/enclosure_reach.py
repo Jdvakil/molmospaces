@@ -1642,15 +1642,34 @@ class PactPlaceCorridorV3Sampler(PactPlaceCorridorV2Sampler):
     CLUTTER_HALF_X_M = 0.025
     CLUTTER_HALF_Y_M = 0.05
     CLUTTER_TOP_Z_M = 0.82
+    CLUTTER_PARK_XYZ_M = (0.0, 0.0, -2.0)
+    CLUTTER_POOL_BODY_NAMES = CLUTTER_BODY_NAMES
 
     def _clutter_slots(self, row: dict | None) -> dict[str, dict[str, Any]]:
+        x_jitter = (row or {}).get("clutter_x_jitter_m") or {}
+        y_jitter = (row or {}).get("clutter_y_jitter_m") or {}
+        slots: dict[str, dict[str, Any]] = {}
+        nominal_xyz = getattr(self, "CLUTTER_SLOT_NOMINAL", None)
+        if nominal_xyz is not None:
+            for slot, spec in nominal_xyz.items():
+                nx, ny, nz = (float(v) for v in spec["center_m"])
+                hx, hy, hz = (float(v) for v in spec["half_m"])
+                jx = float(x_jitter.get(slot, 0.0))
+                jy = float(y_jitter.get(slot, 0.0))
+                slots[slot] = {
+                    "body": f"pact_clutter_{slot}",
+                    "nominal_xyz_m": [nx, ny, nz],
+                    "jitter_xy_m": [jx, jy],
+                    "center_m": [nx + jx, ny + jy, nz],
+                    "half_m": [hx, hy, hz],
+                    "support": spec.get("support"),
+                    "size_name": spec.get("size_name"),
+                }
+            return slots
         height = float(self.CLUTTER_HEIGHT_M)
         half_x = float(self.CLUTTER_HALF_X_M)
         half_y = float(self.CLUTTER_HALF_Y_M)
         half_z = height / 2.0
-        x_jitter = (row or {}).get("clutter_x_jitter_m") or {}
-        y_jitter = (row or {}).get("clutter_y_jitter_m") or {}
-        slots: dict[str, dict[str, Any]] = {}
         for slot, (nx, ny) in self.CLUTTER_SLOT_NOMINAL_XY.items():
             jx = float(x_jitter.get(slot, 0.0))
             jy = float(y_jitter.get(slot, 0.0))
@@ -1688,6 +1707,7 @@ class PactPlaceCorridorV3Sampler(PactPlaceCorridorV2Sampler):
     def _apply_theta(self, env, th):
         super()._apply_theta(env, th)
         slots = th.get("pact_clutter") or self._clutter_slots(self._pact_manifest_row)
+        posed: set[str] = set()
         for spec in slots.values():
             body = spec["body"]
             if any(
@@ -1696,9 +1716,619 @@ class PactPlaceCorridorV3Sampler(PactPlaceCorridorV2Sampler):
             ):
                 raise ValueError(f"illegal clutter body name {body!r}")
             self._mocap_set(env, body, spec["center_m"])
+            posed.add(body)
+        for body in self.CLUTTER_POOL_BODY_NAMES:
+            if body not in posed:
+                self._mocap_set(env, body, list(self.CLUTTER_PARK_XYZ_M))
         if slots:
             self._set_clutter_geom_size(env, slots)
         mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV4Sampler(PactPlaceCorridorV3Sampler):
+    """v3 corridor and tray; 16-body clutter pool with a 13-slot lattice.
+
+    Lattice coordinates are the A0e admission set (clearance C = 0.030 m from
+    the measured v6c swept volume). Unused pool bodies stay parked at z = -2.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v4"
+    CLUTTER_POOL_BODY_NAMES = tuple(f"pact_clutter_{index:02d}" for index in range(16))
+    CLUTTER_BODY_NAMES = tuple(f"pact_clutter_{index:02d}" for index in range(13))
+    CLUTTER_SLOT_NOMINAL = {
+        "00": {
+            "center_m": (0.62, -0.385, 1.12),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "01": {
+            "center_m": (0.62, -0.375, 1.385),
+            "half_m": (0.04, 0.03, 0.015),
+            "support": "ceiling",
+            "size_name": "overhead_thin",
+        },
+        "02": {
+            "center_m": (0.72, -0.385, 1.12),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "03": {
+            "center_m": (0.72, -0.385, 1.24),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "04": {
+            "center_m": (0.65, -0.385, 1.24),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "05": {
+            "center_m": (0.72, 0.385, 1.12),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "06": {
+            "center_m": (0.70, 0.385, 1.24),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "07": {
+            "center_m": (0.72, -0.375, 1.385),
+            "half_m": (0.04, 0.03, 0.015),
+            "support": "ceiling",
+            "size_name": "overhead_thin",
+        },
+        "08": {
+            "center_m": (0.72, 0.385, 1.00),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "09": {
+            "center_m": (0.70, -0.385, 1.00),
+            "half_m": (0.025, 0.02, 0.04),
+            "support": "wall",
+            "size_name": "wall_block",
+        },
+        "10": {
+            "center_m": (0.72, 0.375, 1.385),
+            "half_m": (0.04, 0.03, 0.015),
+            "support": "ceiling",
+            "size_name": "overhead_thin",
+        },
+        "11": {
+            "center_m": (0.62, 0.375, 1.385),
+            "half_m": (0.04, 0.03, 0.015),
+            "support": "ceiling",
+            "size_name": "overhead_thin",
+        },
+        "12": {
+            "center_m": (0.70, -0.38, 0.77),
+            "half_m": (0.025, 0.025, 0.05),
+            "support": "floor",
+            "size_name": "floor_narrow",
+        },
+    }
+
+
+class PactPlaceCorridorV5Sampler(PactPlaceCorridorV3Sampler):
+    """v8 corridor with a frozen palette of Objaverse clutter.
+
+    V3/V4 keep their mocap-box implementation unchanged.  V5 installs every
+    palette UID through the same MjSpec path as the target. Prop slots remain
+    free bodies; mount slots are jointless mocap bodies so overhead fixtures can
+    be posed per episode without falling. Clutter is deliberately absent from
+    ``obstacle_aabbs`` so the frozen expert neither replans nor changes its speed
+    law in response to it.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v5"
+    CLUTTER_PARK_XYZ_M = (4.0, 4.0, -2.0)
+    CLUTTER_SETTLE_STEPS = 300
+    CLUTTER_FREE_JOINT_DAMPING = 0.05
+    CLUTTER_MAX_SETTLED_LINEAR_SPEED_M_S = 0.025
+    CLUTTER_MAX_SETTLED_ANGULAR_SPEED_RAD_S = 0.25
+    CLUTTER_MAX_SETTLED_XY_DRIFT_M = 0.005
+    CLUTTER_CONTAINMENT_TOLERANCE_M = 1e-4
+    LEGACY_CLUTTER_BODY_NAMES = PactPlaceCorridorV3Sampler.CLUTTER_BODY_NAMES
+
+    def _palette(self) -> list[dict[str, Any]]:
+        row = self._pact_manifest_row or {}
+        palette = list(row.get("pact_clutter_palette") or [])
+        if not palette:
+            raise ValueError("v5 manifest row is missing pact_clutter_palette")
+        slots = [str(item["slot"]) for item in palette]
+        if len(slots) != len(set(slots)):
+            raise ValueError("duplicate v5 clutter palette slot")
+        if not 12 <= len(palette) <= 20:
+            raise ValueError("v5 clutter palette must contain 12-20 objects")
+        explicit_classes = [item.get("slot_class") for item in palette]
+        if any(value is not None for value in explicit_classes):
+            if any(value not in {"mount", "prop"} for value in explicit_classes):
+                raise ValueError("v5 slot_class must be explicit mount or prop")
+            mount_count = explicit_classes.count("mount")
+            prop_count = explicit_classes.count("prop")
+            if not 5 <= mount_count <= 6:
+                raise ValueError("v5 palette must contain 5-6 mount slots")
+            if not 12 <= prop_count <= 14:
+                raise ValueError("v5 palette must contain 12-14 prop slots")
+        return palette
+
+    def _layout(self) -> dict[str, Any]:
+        row = self._pact_manifest_row or {}
+        layout = dict(row.get("pact_clutter_layout") or {})
+        if not layout:
+            raise ValueError("v5 manifest row is missing pact_clutter_layout")
+        objects = list(layout.get("objects") or [])
+        if not objects:
+            raise ValueError("v5 clutter layout has no active objects")
+        palette_by_slot = {str(item["slot"]): item for item in self._palette()}
+        slots = [str(item.get("palette_slot", "")) for item in objects]
+        if len(slots) != len(set(slots)):
+            raise ValueError("v5 clutter layout activates a palette slot twice")
+        for item, slot in zip(objects, slots):
+            if slot not in palette_by_slot:
+                raise ValueError(f"layout references unknown palette slot {slot!r}")
+            if str(item.get("uid")) != str(palette_by_slot[slot]["uid"]):
+                raise ValueError(f"layout uid does not match frozen palette slot {slot!r}")
+            slot_class = str(palette_by_slot[slot].get("slot_class") or "prop")
+            support = str(item.get("support") or "")
+            if slot_class == "mount" and support != "overhead":
+                raise ValueError(f"mount slot {slot!r} may only be used overhead")
+            if slot_class == "prop" and support == "overhead":
+                raise ValueError(f"prop slot {slot!r} may not be used overhead")
+        return layout
+
+    def add_auxiliary_objects(self, spec: MjSpec) -> None:
+        from molmo_spaces.utils.lazy_loading_utils import install_uid
+
+        # Inject the frozen Cup_10 target exactly as older place samplers do.
+        super().add_auxiliary_objects(spec)
+        self._pact_clutter_objects: list[dict[str, Any]] = []
+        name_to_meta: dict[str, dict[str, Any]] = {}
+        for index, item in enumerate(self._palette()):
+            uid = str(item["uid"])
+            slot = str(item["slot"])
+            slot_class = str(item.get("slot_class") or "prop")
+            clutter_spec = MjSpec.from_file(str(install_uid(uid)))
+            body = clutter_spec.worldbody.bodies[0]
+            if slot_class == "mount":
+                for joint in list(clutter_spec.joints):
+                    if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                        clutter_spec.delete(joint)
+                body.mocap = True
+            elif not body.first_joint():
+                body.add_joint(
+                    name=f"{uid}_pact_clutter_{slot}_free",
+                    type=mujoco.mjtJoint.mjJNT_FREE,
+                    damping=float(self.CLUTTER_FREE_JOINT_DAMPING),
+                )
+            namespace = f"pact_clutter_{slot}/"
+            original_name = body.name
+            park = np.asarray(self.CLUTTER_PARK_XYZ_M, dtype=float) + np.array(
+                [0.35 * index, 0.0, 0.0]
+            )
+            frame = spec.worldbody.add_frame(pos=park)
+            frame.attach_body(body, namespace, "")
+            full_name = namespace + original_name
+            if any(
+                forbidden in full_name
+                for forbidden in ("cavity_obj_", "pact_intrusion_", "place_receptacle")
+            ):
+                raise ValueError(f"illegal clutter body name {full_name!r}")
+            if not full_name.startswith("pact_clutter_"):
+                raise ValueError(f"clutter body lacks required prefix: {full_name!r}")
+            annotation = ObjectMeta.annotation(uid) or {}
+            record = {
+                "slot": slot,
+                "uid": uid,
+                "body": full_name,
+                "park_m": park.tolist(),
+                "slot_class": slot_class,
+            }
+            self._pact_clutter_objects.append(record)
+            name_to_meta[full_name] = {
+                "asset_id": uid,
+                "category": annotation.get("category", "object"),
+                "object_enum": "temp_object",
+                "is_static": slot_class == "mount",
+                "boundingBox": annotation.get("boundingBox", {}),
+            }
+        self._metadata_adder.update(name_to_meta)
+        log.info(
+            "[PACT place v5] injected %d prop/mount clutter assets",
+            len(self._pact_clutter_objects),
+        )
+
+    @staticmethod
+    def _free_joint_addresses(model, body_name: str) -> tuple[int, int]:
+        body_id = int(model.body(body_name).id)
+        joint_id = int(model.body_jntadr[body_id])
+        if joint_id < 0 or int(model.jnt_type[joint_id]) != int(
+            mujoco.mjtJoint.mjJNT_FREE
+        ):
+            raise ValueError(f"clutter body {body_name!r} is not a free body")
+        return int(model.jnt_qposadr[joint_id]), int(model.jnt_dofadr[joint_id])
+
+    def _set_free_pose(
+        self,
+        env,
+        body_name: str,
+        position: list[float],
+        quat_wxyz: list[float],
+    ) -> None:
+        qadr, dadr = self._free_joint_addresses(env.current_model, body_name)
+        quat = np.asarray(quat_wxyz, dtype=float)
+        quat /= max(float(np.linalg.norm(quat)), 1e-12)
+        env.current_data.qpos[qadr : qadr + 3] = np.asarray(position, dtype=float)
+        env.current_data.qpos[qadr + 3 : qadr + 7] = quat
+        env.current_data.qvel[dadr : dadr + 6] = 0.0
+
+    def _set_mocap_pose(
+        self,
+        env,
+        body_name: str,
+        position: list[float],
+        quat_wxyz: list[float],
+    ) -> None:
+        self._mocap_set(env, body_name, position)
+        model, data = env.current_model, env.current_data
+        mocap_id = int(model.body_mocapid[int(model.body(body_name).id)])
+        if mocap_id < 0:
+            raise ValueError(f"clutter mount {body_name!r} is not a mocap body")
+        quat = np.asarray(quat_wxyz, dtype=float)
+        quat /= max(float(np.linalg.norm(quat)), 1e-12)
+        data.mocap_quat[mocap_id] = quat
+
+    @staticmethod
+    def _body_collision_aabb(
+        model, data, body_name: str
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return a body's descendant collision-geom AABB in world axes."""
+        root_id = int(model.body_rootid[int(model.body(body_name).id)])
+        lows: list[np.ndarray] = []
+        highs: list[np.ndarray] = []
+        for geom_id in range(int(model.ngeom)):
+            body_id = int(model.geom_bodyid[geom_id])
+            if int(model.body_rootid[body_id]) != root_id:
+                continue
+            if int(model.geom_contype[geom_id]) == 0 and int(
+                model.geom_conaffinity[geom_id]
+            ) == 0:
+                continue
+            # ``geom_aabb`` is expressed in the geom-local frame.  Its world
+            # transform must therefore use geom_xpos/geom_xmat (important for
+            # the nested, rotated child bodies in THOR assets).
+            local_center = np.asarray(model.geom_aabb[geom_id, :3], dtype=float)
+            local_half = np.asarray(model.geom_aabb[geom_id, 3:], dtype=float)
+            rotation = np.asarray(data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
+            world_center = (
+                np.asarray(data.geom_xpos[geom_id], dtype=float)
+                + rotation @ local_center
+            )
+            world_half = np.abs(rotation) @ local_half
+            lows.append(world_center - world_half)
+            highs.append(world_center + world_half)
+        if not lows:
+            raise ValueError(f"active clutter body has no collision geoms: {body_name}")
+        return np.min(np.stack(lows), axis=0), np.max(np.stack(highs), axis=0)
+
+    def _draw_theta(self):
+        # Call the pre-clutter implementation directly: V3/V4 remain unchanged,
+        # while V5 does not try to treat free mesh bodies as scalar mocap boxes.
+        th = PactPlaceCorridorV2Sampler._draw_theta(self)
+        th.update(
+            {
+                "pact_place_environment_version": self.PACT_PLACE_ENVIRONMENT_VERSION,
+                "pact_clutter_palette": self._palette(),
+                "pact_clutter_layout": self._layout(),
+                "pact_clutter_movable_free_bodies": True,
+                "pact_clutter_mounts_are_mocap": any(
+                    item.get("slot_class") == "mount" for item in self._palette()
+                ),
+                "pact_clutter_added_to_obstacle_aabbs": False,
+            }
+        )
+        return th
+
+    def _apply_theta(self, env, th):
+        # Shell, intrusion, light, tray, and target behavior are the frozen V2
+        # path.  In particular, clutter is never appended to obstacle_aabbs.
+        PactPlaceCorridorV2Sampler._apply_theta(self, env, th)
+        for body in self.LEGACY_CLUTTER_BODY_NAMES:
+            self._mocap_set(env, body, [0.0, 0.0, -2.0])
+        layout = dict(th["pact_clutter_layout"])
+        layout_by_slot = {
+            str(item["palette_slot"]): dict(item)
+            for item in list(layout["objects"])
+        }
+        # Recheck the frozen metadata boxes against this episode's exact shell.
+        # B2 admits against the minimum 0.20 m depth, while this assertion also
+        # protects later manifest edits from silently intersecting a wall.
+        tolerance = float(self.CLUTTER_CONTAINMENT_TOLERANCE_M)
+        shell_lo = np.asarray(
+            [TUBE_X0, -float(th["ap_w"]) / 2.0, SHELF_TOP_Z], dtype=float
+        )
+        shell_hi = np.asarray(
+            [
+                TUBE_X0 + float(th["depth"]),
+                float(th["ap_w"]) / 2.0,
+                SHELF_TOP_Z + float(th["ap_h"]),
+            ],
+            dtype=float,
+        )
+        for slot, object_layout in layout_by_slot.items():
+            center = np.asarray(object_layout["center_m"], dtype=float)
+            half = np.asarray(object_layout["half_m"], dtype=float)
+            if np.any(center - half < shell_lo - tolerance) or np.any(
+                center + half > shell_hi + tolerance
+            ):
+                raise ValueError(
+                    "v5 clutter metadata box escapes the episode shell: "
+                    f"slot={slot} bounds={(center - half).tolist(), (center + half).tolist()} "
+                    f"shell={shell_lo.tolist(), shell_hi.tolist()}"
+                )
+        self._pact_active_clutter_names: list[str] = []
+        self._pact_active_clutter_layout: dict[str, dict[str, Any]] = {}
+        for item in self._pact_clutter_objects:
+            slot = str(item["slot"])
+            is_mount = item["slot_class"] == "mount"
+            set_pose = self._set_mocap_pose if is_mount else self._set_free_pose
+            if slot in layout_by_slot:
+                object_layout = layout_by_slot[slot]
+                desired_center = np.asarray(object_layout["center_m"], dtype=float)
+                quat = list(map(float, object_layout["quat_wxyz"]))
+                # Objaverse/THOR roots are not consistently located at their
+                # collision-proxy centers. Measure the compiled AABB at
+                # the requested orientation and solve the root translation
+                # that puts the physical box at B2's frozen center.
+                set_pose(env, item["body"], [0.0, 0.0, 0.0], quat)
+                mujoco.mj_forward(env.current_model, env.current_data)
+                local_low, local_high = self._body_collision_aabb(
+                    env.current_model, env.current_data, item["body"]
+                )
+                position = desired_center - (local_low + local_high) / 2.0
+                # Props get a one-centimetre settling drop. Mounts are
+                # kinematic fixtures whose planned collision center is exact.
+                if not is_mount:
+                    position[2] += 0.01
+                set_pose(
+                    env,
+                    item["body"],
+                    position.tolist(),
+                    quat,
+                )
+                self._pact_active_clutter_names.append(item["body"])
+                self._pact_active_clutter_layout[item["body"]] = object_layout
+            else:
+                set_pose(env, item["body"], item["park_m"], [1, 0, 0, 0])
+        if len(self._pact_active_clutter_names) != len(layout_by_slot):
+            raise ValueError(
+                "active v5 clutter body count does not match layout: "
+                f"{self._pact_active_clutter_names} vs {sorted(layout_by_slot)}"
+            )
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+    def _settle_injected_object(self, env: CPUMujocoEnv) -> None:
+        """Settle target and active clutter, restore every unrelated model DOF."""
+        from scipy.spatial.transform import Rotation as R
+
+        model, data = env.current_model, env.current_data
+        qpos_before = data.qpos.copy()
+        target_body = str(self._injected_obj_name)
+        active = list(self._pact_active_clutter_names)
+        slot_class_by_body = {
+            str(item["body"]): str(item["slot_class"])
+            for item in self._pact_clutter_objects
+        }
+        active_props = [
+            name for name in active if slot_class_by_body[name] == "prop"
+        ]
+        active_mounts = [
+            name for name in active if slot_class_by_body[name] == "mount"
+        ]
+        names = [target_body, *active_props]
+        addresses = {
+            name: self._free_joint_addresses(model, name) for name in names
+        }
+
+        # Preserve the target's frozen rest randomization.
+        tqadr, tdadr = addresses[target_body]
+        bx, by, floor_z = self._obj_rest()
+        jx, jy = self.OBJ_JIT_XY
+        data.qpos[tqadr : tqadr + 3] = [
+            bx + float(np.random.uniform(-jx, jx)),
+            by + float(np.random.uniform(-jy, jy)),
+            floor_z + 0.12,
+        ]
+        yaw = float(np.random.uniform(0, 2 * np.pi))
+        data.qpos[tqadr + 3 : tqadr + 7] = (
+            R.from_euler("z", yaw) * R.from_euler("x", 90, degrees=True)
+        ).as_quat(scalar_first=True)
+        data.qvel[:] = 0.0
+        for _ in range(int(self.CLUTTER_SETTLE_STEPS)):
+            mujoco.mj_step(model, data)
+
+        settled_qpos = {
+            name: data.qpos[qadr : qadr + 7].copy()
+            for name, (qadr, _dadr) in addresses.items()
+        }
+        active_roots = {
+            int(model.body_rootid[int(model.body(name).id)]): name for name in active
+        }
+        target_root = int(model.body_rootid[int(model.body(target_body).id)])
+        initial_object_contacts = []
+        for contact_index in range(int(data.ncon)):
+            contact = data.contact[contact_index]
+            left_root = int(
+                model.body_rootid[int(model.geom_bodyid[int(contact.geom1)])]
+            )
+            right_root = int(
+                model.body_rootid[int(model.geom_bodyid[int(contact.geom2)])]
+            )
+            left_active = active_roots.get(left_root)
+            right_active = active_roots.get(right_root)
+            if left_active is None and right_active is None:
+                continue
+            pair = {
+                "geom1": model.geom(int(contact.geom1)).name or "",
+                "geom2": model.geom(int(contact.geom2)).name or "",
+                "active1": left_active,
+                "active2": right_active,
+                "distance_m": float(contact.dist),
+            }
+            initial_object_contacts.append(pair)
+            if (
+                left_active is not None
+                and right_active is not None
+                and left_root != right_root
+            ):
+                raise ValueError(f"settled clutter objects overlap: {pair}")
+            if (
+                (left_active is not None and right_root == target_root)
+                or (right_active is not None and left_root == target_root)
+            ):
+                raise ValueError(f"settled clutter overlaps target: {pair}")
+        settled_records = []
+        for name in active_props:
+            qadr, dadr = addresses[name]
+            linear = float(np.linalg.norm(data.qvel[dadr : dadr + 3]))
+            angular = float(np.linalg.norm(data.qvel[dadr + 3 : dadr + 6]))
+            settled_low, settled_high = self._body_collision_aabb(model, data, name)
+            settled_collision_center = (settled_low + settled_high) / 2.0
+            planned_xy = np.asarray(
+                self._pact_active_clutter_layout[name]["center_m"][:2], dtype=float
+            )
+            settled_xy = settled_collision_center[:2]
+            xy_drift = float(np.linalg.norm(settled_xy - planned_xy))
+            if xy_drift > self.CLUTTER_MAX_SETTLED_XY_DRIFT_M:
+                raise ValueError(
+                    f"clutter drifted during settle: {name} {xy_drift:.6f} m"
+                )
+            if linear > self.CLUTTER_MAX_SETTLED_LINEAR_SPEED_M_S:
+                raise ValueError(
+                    f"clutter did not settle: {name} linear speed {linear:.6f} m/s"
+                )
+            if angular > self.CLUTTER_MAX_SETTLED_ANGULAR_SPEED_RAD_S:
+                raise ValueError(
+                    f"clutter did not settle: {name} angular speed {angular:.6f} rad/s"
+                )
+            body_id = int(model.body(name).id)
+            settled_records.append(
+                {
+                    "body": name,
+                    "layout": dict(self._pact_active_clutter_layout[name]),
+                    "qpos": settled_qpos[name].tolist(),
+                    "position_m": np.asarray(data.xpos[body_id], dtype=float).tolist(),
+                    "collision_center_m": settled_collision_center.tolist(),
+                    "collision_bounds_m": [settled_low.tolist(), settled_high.tolist()],
+                    "xmat": np.asarray(data.xmat[body_id], dtype=float).tolist(),
+                    "linear_speed_m_s": linear,
+                    "angular_speed_rad_s": angular,
+                    "xy_drift_m": xy_drift,
+                }
+            )
+
+        mount_records = []
+        for name in active_mounts:
+            low, high = self._body_collision_aabb(model, data, name)
+            body_id = int(model.body(name).id)
+            mount_records.append(
+                {
+                    "body": name,
+                    "layout": dict(self._pact_active_clutter_layout[name]),
+                    "position_m": np.asarray(data.xpos[body_id], dtype=float).tolist(),
+                    "collision_center_m": ((low + high) / 2.0).tolist(),
+                    "collision_bounds_m": [low.tolist(), high.tolist()],
+                    "xmat": np.asarray(data.xmat[body_id], dtype=float).tolist(),
+                    "settling_skipped": True,
+                    "reason": "kinematic_mocap_overhead_fixture",
+                }
+            )
+
+        # Validate the settled collision bounds, not only the metadata boxes
+        # used by B2. MuJoCo stores each geom's local AABB as center/half-extents.
+        shell_lo = np.asarray(
+            [TUBE_X0, -float(self._theta["ap_w"]) / 2.0, SHELF_TOP_Z],
+            dtype=float,
+        )
+        shell_hi = np.asarray(
+            [
+                TUBE_X0 + float(self._theta["depth"]),
+                float(self._theta["ap_w"]) / 2.0,
+                SHELF_TOP_Z + float(self._theta["ap_h"]),
+            ],
+            dtype=float,
+        )
+        tolerance = float(self.CLUTTER_CONTAINMENT_TOLERANCE_M)
+        settled_bounds: dict[str, list[list[float]]] = {}
+        for name in active:
+            low, high = self._body_collision_aabb(model, data, name)
+            settled_bounds[name] = [low.tolist(), high.tolist()]
+            # Enforce the exact lateral/aperture and back-wall bounds after
+            # settling.  The metadata precheck enforces the planned floor
+            # bound; THOR collision proxies can be intentionally embedded in
+            # a support surface, so their lower Z AABB is recorded but is not
+            # a meaningful enclosure-escape test.
+            if np.any(low[:2] < shell_lo[:2] - tolerance) or np.any(
+                high > shell_hi + tolerance
+            ):
+                raise ValueError(
+                    "settled v5 clutter collision proxy escapes the episode shell: "
+                    f"body={name} bounds={low.tolist(), high.tolist()} "
+                    f"shell={shell_lo.tolist(), shell_hi.tolist()}"
+                )
+
+        # Restore robot, parked objects, and all other state exactly; keep only
+        # the target and active clutter's settled free-joint poses.
+        data.qpos[:] = qpos_before
+        data.qvel[:] = 0.0
+        for name, values in settled_qpos.items():
+            qadr, _dadr = addresses[name]
+            data.qpos[qadr : qadr + 7] = values
+        mujoco.mj_forward(model, data)
+        th = getattr(self, "_theta", None)
+        if th is not None:
+            th["pact_clutter_settle"] = {
+                "settle_steps": int(self.CLUTTER_SETTLE_STEPS),
+                "linear_speed_threshold_m_s": float(
+                    self.CLUTTER_MAX_SETTLED_LINEAR_SPEED_M_S
+                ),
+                "angular_speed_threshold_rad_s": float(
+                    self.CLUTTER_MAX_SETTLED_ANGULAR_SPEED_RAD_S
+                ),
+                "xy_drift_threshold_m": float(
+                    self.CLUTTER_MAX_SETTLED_XY_DRIFT_M
+                ),
+                "stable_at_step0": True,
+                "model_nq": int(model.nq),
+                "episode_shell_bounds_m": [shell_lo.tolist(), shell_hi.tolist()],
+                "settled_collision_bounds_m": settled_bounds,
+                "objects": settled_records,
+                "mounts": mount_records,
+                "dynamic_prop_static_fixture_asymmetry": (
+                    "floor props settle and can topple; overhead mocap fixtures are "
+                    "kinematically mounted and immovable"
+                ),
+                "initial_object_contacts": initial_object_contacts,
+            }
+
+    def _sample_task(self, env: CPUMujocoEnv):
+        task = super()._sample_task(env)
+        task.scene_params = dict(getattr(task, "scene_params", {}) or {})
+        task.scene_params["pact_clutter_pool_body_names"] = [
+            item["body"] for item in self._pact_clutter_objects
+        ]
+        task.scene_params["pact_clutter_active_body_names"] = list(
+            self._pact_active_clutter_names
+        )
+        return task
 
 
 class PactPlaceTCPMoveSequence(TCPMoveSequence):
@@ -2304,6 +2934,8 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             self._pact_abort_branch_terminal = None
             self._gripper_width_min = None
             self._gripper_width_max = None
+            self._pact_clutter_stability_events = []
+            self._pact_clutter_stability_bodies = set()
         self.task._contact_audit_hook = self._pact_place_contact_audit
         self.behavior_class = "straight"
         self.inbound_deflected = False
@@ -2356,6 +2988,50 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             )
         except Exception:
             return
+
+    def _update_clutter_stability(self) -> None:
+        """Turn a displaced/toppled v5 free body into an outcome-bearing event."""
+        scene = getattr(self.task, "scene_params", {}) or {}
+        settle = scene.get("pact_clutter_settle") or {}
+        for baseline in settle.get("objects") or []:
+            body_name = str(baseline["body"])
+            if body_name in self._pact_clutter_stability_bodies:
+                continue
+            try:
+                model = self.task.env.current_model
+                data = self.task.env.current_data
+                body_id = int(model.body(body_name).id)
+                position = np.asarray(data.xpos[body_id], dtype=float)
+                reference_position = np.asarray(baseline["position_m"], dtype=float)
+                rotation = np.asarray(data.xmat[body_id], dtype=float).reshape(3, 3)
+                reference_rotation = np.asarray(
+                    baseline["xmat"], dtype=float
+                ).reshape(3, 3)
+                cosine = float(
+                    np.clip(
+                        (np.trace(reference_rotation.T @ rotation) - 1.0) / 2.0,
+                        -1.0,
+                        1.0,
+                    )
+                )
+                displacement = float(np.linalg.norm(position - reference_position))
+                rotation_angle = float(np.arccos(cosine))
+                if displacement <= 0.02 and rotation_angle <= np.deg2rad(25.0):
+                    continue
+                self._pact_clutter_stability_bodies.add(body_name)
+                self._pact_clutter_stability_events.append(
+                    {
+                        "step": int(self._pact_place_control_step),
+                        "policy_phase": str(self.get_phase()),
+                        "body": body_name,
+                        "classification": "other_environment",
+                        "reason": "movable_clutter_toppled_or_displaced",
+                        "displacement_m": displacement,
+                        "rotation_angle_rad": rotation_angle,
+                    }
+                )
+            except Exception:
+                continue
 
     def _pact_abort_recorder(self):
         scripts = Path(__file__).resolve().parents[4] / "scripts"
@@ -2478,6 +3154,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         )
         action = super().get_action(observation)
         self._update_manipulation_progress()
+        self._update_clutter_stability()
         self._record_place_trajectory_step()
         self._pact_place_control_step += 1
         return action
@@ -2495,6 +3172,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             self.task.env, self._pact_place_control_step
         )
         self._update_manipulation_progress()
+        self._update_clutter_stability()
         self._record_place_trajectory_step()
         info = super().get_info()
         terminal_tracking: dict[str, Any] = {
@@ -2560,6 +3238,12 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 ),
                 "endpoint_scalars": endpoint_scalars,
                 "trajectory": list(self._pact_place_trajectory),
+                "clutter_stability_events": list(
+                    self._pact_clutter_stability_events
+                ),
+                "clutter_stability_ok": not bool(
+                    self._pact_clutter_stability_events
+                ),
             }
         )
         return info
