@@ -95,6 +95,22 @@
             size="0.055 0.240 0.090" rgba="0.88 0.89 0.90 1"/>
     </body>
 
+    <!-- V9.4 mounted-clutter preview pool. Older samplers leave every body
+         parked; the V9.4 sampler sizes and attaches one wall beam and one
+         ceiling drop per episode. -->
+    <body name="pact_clutter_mount_wall_left" mocap="true" pos="0 2.2 -2.0">
+      <geom name="pact_clutter_mount_wall_left_g" class="hood" type="box"
+            size="0.05 0.12 0.04" rgba="0.58 0.59 0.61 1"/>
+    </body>
+    <body name="pact_clutter_mount_wall_right" mocap="true" pos="0 -2.2 -2.0">
+      <geom name="pact_clutter_mount_wall_right_g" class="hood" type="box"
+            size="0.05 0.12 0.04" rgba="0.58 0.59 0.61 1"/>
+    </body>
+    <body name="pact_clutter_mount_ceiling" mocap="true" pos="0 0 -2.0">
+      <geom name="pact_clutter_mount_ceiling_g" class="hood" type="box"
+            size="0.055 0.07 0.16" rgba="0.43 0.44 0.47 1"/>
+    </body>
+
     <!-- Static pedestal and shallow tray outside the aperture. The support
          surface is its own body so PickAndPlaceTask sees the floor top rather
          than the raised lip when computing the placement height. -->

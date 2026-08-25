@@ -2254,18 +2254,23 @@ class PactPlaceCorridorV5Sampler(PactPlaceCorridorV3Sampler):
 
         # Validate the settled collision bounds, not only the metadata boxes
         # used by B2. MuJoCo stores each geom's local AABB as center/half-extents.
-        shell_lo = np.asarray(
-            [TUBE_X0, -float(self._theta["ap_w"]) / 2.0, SHELF_TOP_Z],
-            dtype=float,
-        )
-        shell_hi = np.asarray(
-            [
-                TUBE_X0 + float(self._theta["depth"]),
-                float(self._theta["ap_w"]) / 2.0,
-                SHELF_TOP_Z + float(self._theta["ap_h"]),
-            ],
-            dtype=float,
-        )
+        workspace_bounds = self._theta.get("pact_clutter_workspace_bounds_m")
+        if workspace_bounds is None:
+            shell_lo = np.asarray(
+                [TUBE_X0, -float(self._theta["ap_w"]) / 2.0, SHELF_TOP_Z],
+                dtype=float,
+            )
+            shell_hi = np.asarray(
+                [
+                    TUBE_X0 + float(self._theta["depth"]),
+                    float(self._theta["ap_w"]) / 2.0,
+                    SHELF_TOP_Z + float(self._theta["ap_h"]),
+                ],
+                dtype=float,
+            )
+        else:
+            shell_lo = np.asarray(workspace_bounds[0], dtype=float)
+            shell_hi = np.asarray(workspace_bounds[1], dtype=float)
         tolerance = float(self.CLUTTER_CONTAINMENT_TOLERANCE_M)
         settled_bounds: dict[str, list[list[float]]] = {}
         for name in active:
@@ -2329,6 +2334,734 @@ class PactPlaceCorridorV5Sampler(PactPlaceCorridorV3Sampler):
             self._pact_active_clutter_names
         )
         return task
+
+
+class PactPlaceCorridorV9Sampler(PactPlaceCorridorV5Sampler):
+    """V9.2's active side panel plus staggered real-object route blocker.
+
+    The V5 injector remains the single object-installation path.  V9 only
+    narrows the manifest contract and records the two vessel collision boxes
+    as live obstacle boxes after the real assets have been posed.  V9.2 restores
+    exactly one hidden left/right panel and keeps the bottle on the corridor
+    centreline.  The panel selects the open lane; four bottle depth stations
+    locally tighten that lane without closing it or leaking panel side through
+    RGB-visible clutter.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_2"
+    VESSEL_ROLES = frozenset({"inbound_vessel", "outbound_vessel"})
+    VESSEL_CATEGORIES = frozenset(
+        {
+            "vase",
+            "soapbottle",
+            "pot",
+            "candle",
+            "can",
+            "spray can",
+            "aerosol can",
+            "travel mug",
+        }
+    )
+    DECOR_CATEGORIES = frozenset(
+        {"mug", "apple", "bowl", "plate", "potato", "can", "candle"}
+    )
+    EXCLUDED_CATEGORIES = frozenset(
+        {"cup", "teacup", "plastic cup", "ceramic cup", "clay cup"}
+    )
+    CLUTTER_WORKSPACE_LOW = (0.50, -0.43, SHELF_TOP_Z)
+    CLUTTER_WORKSPACE_HIGH = (1.34, 0.43, 1.50)
+
+    def _palette(self) -> list[dict[str, Any]]:
+        row = self._pact_manifest_row or {}
+        palette = list(row.get("pact_clutter_palette") or [])
+        if not 8 <= len(palette) <= 12:
+            raise ValueError("v9 palette must contain 2 vessels and 6-10 decor objects")
+        slots = [str(item.get("slot", "")) for item in palette]
+        if len(slots) != len(set(slots)):
+            raise ValueError("duplicate v9 clutter palette slot")
+        vessels = [item for item in palette if str(item.get("role")) in self.VESSEL_ROLES]
+        decor = [item for item in palette if str(item.get("role")) == "decor"]
+        if len(vessels) != 2 or {str(item.get("role")) for item in vessels} != self.VESSEL_ROLES:
+            raise ValueError("v9 palette must contain one inbound and one outbound vessel")
+        if not 6 <= len(decor) <= 10 or len(vessels) + len(decor) != len(palette):
+            raise ValueError("v9 palette must contain 6-10 decor objects")
+        counts: dict[str, int] = {}
+        for item in palette:
+            category = str(item.get("category", "object"))
+            counts[category] = counts.get(category, 0) + 1
+            if counts[category] > 2:
+                raise ValueError(f"v9 category cap exceeded for {category!r}")
+            if category in self.EXCLUDED_CATEGORIES:
+                raise ValueError(f"v9 palette contains excluded cup-like category {category!r}")
+            if str(item.get("slot_class") or "prop") != "prop":
+                raise ValueError("v9 clutter must use movable free-body props")
+            if str(item.get("support") or "shelf_standing") != "shelf_standing":
+                raise ValueError("v9 palette objects must be standing free bodies")
+        for item in vessels:
+            if str(item.get("category", "")).lower() not in self.VESSEL_CATEGORIES:
+                raise ValueError(f"v9 vessel category is not approved: {item.get('category')!r}")
+            dimensions = [float(value) for value in item.get("dimensions_m", [])]
+            if len(dimensions) != 3 or not 0.15 <= dimensions[2] <= 0.25:
+                raise ValueError(f"v9 vessel height is outside 0.15-0.25 m: {dimensions}")
+        return palette
+
+    def _layout(self) -> dict[str, Any]:
+        layout = super()._layout()
+        row = self._pact_manifest_row or {}
+        layout_side = layout.get("intrusion_side")
+        if layout_side is not None and str(layout_side) != str(row.get("intrusion_side")):
+            raise ValueError("v9 layout panel side does not match its manifest row")
+        if layout.get("legacy_panel_active") and layout_side not in {"left", "right"}:
+            raise ValueError("active-panel v9 layout is missing its committed panel side")
+        objects = list(layout.get("objects") or [])
+        palette_by_slot = {str(item["slot"]): item for item in self._palette()}
+        by_role = {
+            str(palette_by_slot[str(item["palette_slot"])]["role"]): item
+            for item in objects
+        }
+        if set(by_role) != set(self.VESSEL_ROLES) | {"decor"}:
+            raise ValueError("v9 layout roles do not match the frozen palette")
+        if len(
+            [
+                item
+                for item in objects
+                if str(palette_by_slot[str(item["palette_slot"])]["role"])
+                in self.VESSEL_ROLES
+            ]
+        ) != 2:
+            raise ValueError("v9 layout must activate both vessel slots")
+        return layout
+
+    def _draw_theta(self):
+        th = PactPlaceCorridorV5Sampler._draw_theta(self)
+        panel_active = bool(th["pact_clutter_layout"].get("legacy_panel_active"))
+        # Preserve the exact inherited panel record for both current and
+        # historical replay rows.  V9.2 keeps it active; V9.1 rows explicitly
+        # carry legacy_panel_active=false and remain reproducibly parked.
+        th["pact_v9_legacy_panel"] = {
+            "present": bool(th.get("protrusion_present")),
+            "name": th.get("protr_name"),
+            "side": th.get("protr_wall"),
+            "center": th.get("protr_center"),
+            "half": th.get("protr_half"),
+        }
+        if not panel_active:
+            th["protrusion_present"] = False
+            th.pop("protr_center", None)
+            th.pop("protr_half", None)
+        th["pact_v9_legacy_panel_active"] = panel_active
+        th["pact_clutter_workspace_bounds_m"] = [
+            list(self.CLUTTER_WORKSPACE_LOW),
+            list(self.CLUTTER_WORKSPACE_HIGH),
+        ]
+        layout_by_slot = {
+            str(item["palette_slot"]): item
+            for item in list(th["pact_clutter_layout"]["objects"])
+        }
+        palette_by_slot = {str(item["slot"]): item for item in self._palette()}
+        hazards = []
+        for role in ("inbound_vessel", "outbound_vessel"):
+            item = next(
+                object_layout
+                for slot, object_layout in layout_by_slot.items()
+                if str(palette_by_slot[slot].get("role")) == role
+            )
+            hazards.append(
+                {
+                    "name": f"pact_vessel_{role}",
+                    "role": role,
+                    "slot": str(item["palette_slot"]),
+                    "uid": str(item["uid"]),
+                    "center": [float(value) for value in item["center_m"]],
+                    "half": [float(value) for value in item["half_m"]],
+                    "phase": "inbound" if role == "inbound_vessel" else "outbound",
+                }
+            )
+        th.update(
+            {
+                "pact_v9_hazards": hazards,
+                "pact_v9_hazard_list_source": (
+                    "active_hidden_panel_plus_real_objaverse_vessels"
+                    if panel_active
+                    else "real_objaverse_vessels_panel_parked_historical"
+                ),
+                "pact_v9_vessels_added_to_obstacle_aabbs": True,
+            }
+        )
+        return th
+
+    def _apply_theta(self, env, th):
+        # Install the shell directly, then pose exactly the panel committed by
+        # the row.  This also retains replay compatibility with V9.1 rows that
+        # explicitly park the panel.
+        panel_present = bool(th.get("protrusion_present"))
+        th["protrusion_present"] = False
+        FumehoodSampler._apply_theta(self, env, th)
+        th["protrusion_present"] = panel_present
+        for name, y in (
+            ("pact_intrusion_left", 1.8),
+            ("pact_intrusion_right", -1.8),
+        ):
+            self._mocap_set(env, name, [0.0, y, -2.0])
+        if th.get("pact_v9_legacy_panel_active"):
+            self._mocap_set(env, str(th["protr_name"]), th["protr_center"])
+            th.setdefault("obstacle_aabbs", []).append(
+                [
+                    list(map(float, th["protr_center"])),
+                    list(map(float, th["protr_half"])),
+                ]
+            )
+        for body in self.LEGACY_CLUTTER_BODY_NAMES:
+            self._mocap_set(env, body, [0.0, 0.0, -2.0])
+        layout_by_slot = {
+            str(item["palette_slot"]): item
+            for item in list(th["pact_clutter_layout"]["objects"])
+        }
+        tolerance = 1e-4
+        shell_lo = np.asarray(self.CLUTTER_WORKSPACE_LOW, dtype=float)
+        shell_hi = np.asarray(self.CLUTTER_WORKSPACE_HIGH, dtype=float)
+        for slot, object_layout in layout_by_slot.items():
+            center = np.asarray(object_layout["center_m"], dtype=float)
+            half = np.asarray(object_layout["half_m"], dtype=float)
+            if np.any(center - half < shell_lo - tolerance) or np.any(
+                center + half > shell_hi + tolerance
+            ):
+                raise ValueError(
+                    "v9 clutter metadata box escapes the physical bench workspace: "
+                    f"slot={slot} bounds={(center - half).tolist(), (center + half).tolist()} "
+                    f"shell={shell_lo.tolist(), shell_hi.tolist()}"
+                )
+        self._pact_active_clutter_names: list[str] = []
+        self._pact_active_clutter_layout: dict[str, dict[str, Any]] = {}
+        for item in self._pact_clutter_objects:
+            slot = str(item["slot"])
+            is_mount = item["slot_class"] == "mount"
+            set_pose = self._set_mocap_pose if is_mount else self._set_free_pose
+            if slot in layout_by_slot:
+                object_layout = layout_by_slot[slot]
+                desired_center = np.asarray(object_layout["center_m"], dtype=float)
+                quat = list(map(float, object_layout["quat_wxyz"]))
+                set_pose(env, item["body"], [0.0, 0.0, 0.0], quat)
+                mujoco.mj_forward(env.current_model, env.current_data)
+                local_low, local_high = self._body_collision_aabb(
+                    env.current_model, env.current_data, item["body"]
+                )
+                position = desired_center - (local_low + local_high) / 2.0
+                if not is_mount:
+                    position[2] = 0.72 + 0.001 - float(local_low[2])
+                set_pose(
+                    env,
+                    item["body"],
+                    position.tolist(),
+                    quat,
+                )
+                self._pact_active_clutter_names.append(item["body"])
+                self._pact_active_clutter_layout[item["body"]] = object_layout
+            else:
+                set_pose(env, item["body"], item["park_m"], [1, 0, 0, 0])
+        if len(self._pact_active_clutter_names) != len(layout_by_slot):
+            raise ValueError(
+                "active v5 clutter body count does not match layout: "
+                f"{self._pact_active_clutter_names} vs {sorted(layout_by_slot)}"
+            )
+        body_by_slot = {
+            str(item["slot"]): str(item["body"])
+            for item in self._pact_clutter_objects
+        }
+        palette_by_slot = {str(item["slot"]): item for item in self._palette()}
+        exact_hazards = []
+        for hazard in list(th.get("pact_v9_hazards") or []):
+            body_name = body_by_slot[str(hazard["slot"])]
+            low, high = self._body_collision_aabb(
+                env.current_model, env.current_data, body_name
+            )
+            center = (low + high) / 2.0
+            half = (high - low) / 2.0
+            exact_hazards.append(
+                {
+                    **hazard,
+                    "body": body_name,
+                    "center": center.tolist(),
+                    "half": half.tolist(),
+                    "category": str(palette_by_slot[str(hazard["slot"])]["category"]),
+                }
+            )
+            # Both vessels remain live obstacle additions.  In V9.2 the active
+            # panel was already added above; historical V9.1 rows keep it parked.
+            th.setdefault("obstacle_aabbs", []).append([center.tolist(), half.tolist()])
+        th["pact_v9_hazards"] = exact_hazards
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV93Sampler(PactPlaceCorridorV9Sampler):
+    """V9.3 two-bottle 2-D chicane with paired, side-independent jitter."""
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_3"
+    VESSEL_JITTER_LIMIT_M = 0.020
+
+    def _layout(self) -> dict[str, Any]:
+        import copy
+
+        layout = copy.deepcopy(super()._layout())
+        row = self._pact_manifest_row or {}
+        x_jitter = row.get("clutter_x_jitter_m") or {}
+        y_jitter = row.get("clutter_y_jitter_m") or {}
+        if not isinstance(x_jitter, dict) or not isinstance(y_jitter, dict):
+            raise ValueError("V9.3 clutter jitter must be keyed by palette slot")
+        vessel_slots = {
+            str(layout["inbound_vessel_slot"]),
+            str(layout["outbound_vessel_slot"]),
+        }
+        for item in layout["objects"]:
+            slot = str(item["palette_slot"])
+            jx = float(x_jitter.get(slot, 0.0))
+            jy = float(y_jitter.get(slot, 0.0))
+            if slot not in vessel_slots and (jx != 0.0 or jy != 0.0):
+                raise ValueError(f"V9.3 jitter may only move vessel slots: {slot}")
+            if abs(jx) > self.VESSEL_JITTER_LIMIT_M or abs(jy) > self.VESSEL_JITTER_LIMIT_M:
+                raise ValueError(f"V9.3 vessel jitter exceeds +/-20 mm: {slot}")
+            item["center_m"][0] = float(item["center_m"][0]) + jx
+            item["center_m"][1] = float(item["center_m"][1]) + jy
+            item["jitter_xy_m"] = [jx, jy]
+        layout["applied_clutter_x_jitter_m"] = {
+            str(key): float(value) for key, value in x_jitter.items()
+        }
+        layout["applied_clutter_y_jitter_m"] = {
+            str(key): float(value) for key, value in y_jitter.items()
+        }
+        layout["paired_side_cell"] = row.get("paired_side_cell")
+        return layout
+
+
+class PactPlaceCorridorV94MountedPreviewSampler(PactPlaceCorridorV93Sampler):
+    """V9.3 plus one kinematic wall beam and one ceiling-mounted box."""
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_4_mounted_preview"
+    MOUNT_BODIES = {
+        "wall_left": "pact_clutter_mount_wall_left",
+        "wall_right": "pact_clutter_mount_wall_right",
+        "ceiling": "pact_clutter_mount_ceiling",
+    }
+    MOUNT_GEOMS = {
+        key: f"{body}_g" for key, body in MOUNT_BODIES.items()
+    }
+
+    def _mounted_fixtures(self) -> list[dict[str, Any]]:
+        fixtures = [
+            dict(item)
+            for item in list(
+                (self._pact_manifest_row or {}).get("pact_mounted_fixtures") or []
+            )
+        ]
+        supports = [str(item.get("support")) for item in fixtures]
+        if sorted(supports) not in (
+            ["ceiling", "wall_left"],
+            ["ceiling", "wall_right"],
+        ):
+            raise ValueError("V9.4 requires exactly one wall and one ceiling fixture")
+        for item in fixtures:
+            support = str(item["support"])
+            center = np.asarray(item.get("center_m"), dtype=float)
+            half = np.asarray(item.get("half_m"), dtype=float)
+            if center.shape != (3,) or half.shape != (3,) or np.any(half <= 0.0):
+                raise ValueError(f"invalid V9.4 mounted fixture geometry: {item}")
+            if support.startswith("wall_"):
+                side = 1.0 if support == "wall_left" else -1.0
+                wall_face = side * float(center[1] + side * half[1])
+                if abs(wall_face - 0.45) > 1e-6:
+                    raise ValueError(f"V9.4 wall fixture is detached: {item}")
+            else:
+                if abs(float(center[2] + half[2]) - 1.515) > 1e-6:
+                    raise ValueError(f"V9.4 ceiling fixture is detached: {item}")
+            if not 0.58 <= center[0] - half[0] <= center[0] + half[0] <= 1.36:
+                raise ValueError(f"V9.4 fixture escapes enclosure depth: {item}")
+        return fixtures
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v94_mounted_fixtures"] = self._mounted_fixtures()
+        th["pact_v94_mounted_clutter_is_kinematic"] = True
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        for support, body in self.MOUNT_BODIES.items():
+            park_y = 2.2 if support == "wall_left" else -2.2 if support == "wall_right" else 0.0
+            self._mocap_set(env, body, [0.0, park_y, -2.0])
+        exact = []
+        for item in list(th.get("pact_v94_mounted_fixtures") or []):
+            support = str(item["support"])
+            body = self.MOUNT_BODIES[support]
+            geom = env.current_model.geom(self.MOUNT_GEOMS[support])
+            half = np.asarray(item["half_m"], dtype=float)
+            center = np.asarray(item["center_m"], dtype=float)
+            env.current_model.geom_size[int(geom.id)] = half
+            self._mocap_set(env, body, center.tolist())
+            record = {
+                **item,
+                "name": f"pact_mounted_{support}",
+                "body": body,
+                "role": "ceiling_fixture" if support == "ceiling" else "wall_fixture",
+                "center": center.tolist(),
+                "half": half.tolist(),
+                "phase": "outbound",
+                "kinematic": True,
+            }
+            exact.append(record)
+            th.setdefault("obstacle_aabbs", []).append(
+                [center.tolist(), half.tolist()]
+            )
+        th.setdefault("pact_v9_hazards", []).extend(exact)
+        th["pact_v94_active_mount_bodies"] = [item["body"] for item in exact]
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV95LowWallSampler(PactPlaceCorridorV93Sampler):
+    """V9.3 plus one low, rigid lateral fixture; no active ceiling obstacle."""
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_5_low_wall"
+    WALL_BODIES = {
+        "wall_left": "pact_clutter_mount_wall_left",
+        "wall_right": "pact_clutter_mount_wall_right",
+    }
+    WALL_GEOMS = {key: f"{body}_g" for key, body in WALL_BODIES.items()}
+
+    def _wall_fixture(self) -> dict[str, Any]:
+        fixture = dict(
+            (self._pact_manifest_row or {}).get("pact_mounted_wall_fixture") or {}
+        )
+        support = str(fixture.get("support") or "")
+        if support not in self.WALL_BODIES:
+            raise ValueError("V9.5 requires exactly one left/right wall fixture")
+        center = np.asarray(fixture.get("center_m"), dtype=float)
+        half = np.asarray(fixture.get("half_m"), dtype=float)
+        if center.shape != (3,) or half.shape != (3,) or np.any(half <= 0.0):
+            raise ValueError(f"invalid V9.5 wall fixture geometry: {fixture}")
+        side = 1.0 if support == "wall_left" else -1.0
+        exterior_face = side * float(center[1] + side * half[1])
+        if abs(exterior_face - 0.45) > 1e-6:
+            raise ValueError(f"V9.5 wall fixture is detached: {fixture}")
+        low = center - half
+        high = center + half
+        if low[0] < 0.58 - 1e-6 or high[0] > 0.86 + 1e-6:
+            raise ValueError(f"V9.5 wall fixture escapes the 0.58-0.86 m depth: {fixture}")
+        if not 0.87 - 1e-6 <= low[2] <= 0.98 + 1e-6:
+            raise ValueError(f"V9.5 wall fixture bottom is outside 0.87-0.98 m: {fixture}")
+        if not 1.06 - 1e-6 <= high[2] <= 1.15 + 1e-6:
+            raise ValueError(f"V9.5 wall fixture top is outside 1.06-1.15 m: {fixture}")
+        if 1.03 - low[2] < 0.05 - 1e-6:
+            raise ValueError("V9.5 fixture must extend at least 50 mm below z=1.03 m")
+        return fixture
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v95_wall_fixture"] = self._wall_fixture()
+        th["pact_v95_mounted_clutter_is_kinematic"] = True
+        th["pact_v95_ceiling_fixture_active"] = False
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        self._mocap_set(env, "pact_clutter_mount_wall_left", [0.0, 2.2, -2.0])
+        self._mocap_set(env, "pact_clutter_mount_wall_right", [0.0, -2.2, -2.0])
+        self._mocap_set(env, "pact_clutter_mount_ceiling", [0.0, 0.0, -2.0])
+        item = dict(th["pact_v95_wall_fixture"])
+        support = str(item["support"])
+        body = self.WALL_BODIES[support]
+        center = np.asarray(item["center_m"], dtype=float)
+        half = np.asarray(item["half_m"], dtype=float)
+        env.current_model.geom_size[int(env.current_model.geom(self.WALL_GEOMS[support]).id)] = half
+        self._mocap_set(env, body, center.tolist())
+        hazard = {
+            **item,
+            "name": f"pact_mounted_{support}",
+            "body": body,
+            "role": "wall_fixture",
+            "center": center.tolist(),
+            "half": half.tolist(),
+            "phase": "inbound_and_outbound",
+            "kinematic": True,
+        }
+        th.setdefault("obstacle_aabbs", []).append([center.tolist(), half.tolist()])
+        th.setdefault("pact_v9_hazards", []).append(hazard)
+        th["pact_v95_active_mount_body"] = body
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV96ClusterSampler(PactPlaceCorridorV93Sampler):
+    """V9.3 with each leg's single vessel replaced by a clustered hazard.
+
+    W1 measured the skin's resolving power: an 8x8 sensor over a 45 deg cone has
+    a pixel pitch of ``0.1036 * R``, so an 0.089 m bottle clears one pixel only
+    inside 0.86 m.  The V9.5 inbound bottle changed 40 of 4.85M raw values --
+    below the sensor's resolving power, not a weak signal awaiting tuning.  V9.6
+    therefore gives each leg a cluster of tall vessels standing shoulder to
+    shoulder so the leg presents a contiguous silhouette wide enough to resolve.
+
+    The palette is twelve prop slots: three ``inbound_cluster`` members, three
+    ``outbound_cluster`` members and six RGB-only ``decor`` items.  Every asset
+    is one already accepted in ``palette_v9_1.json``.  The 40-sensor suite, the
+    encoder, the observation contract and the intrusion panel are untouched.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_6_cluster"
+    CLUSTER_ROLES = ("inbound_cluster", "outbound_cluster")
+    CLUSTER_MEMBERS_PER_LEG = (3, 4)
+    PALETTE_SIZE_RANGE = (12, 16)
+    MIN_CLUSTER_SPAN_M = 0.25
+    MAX_CLUSTER_GAP_M = 0.04
+
+    def _palette(self) -> list[dict[str, Any]]:
+        row = self._pact_manifest_row or {}
+        palette = list(row.get("pact_clutter_palette") or [])
+        low_size, high_size = self.PALETTE_SIZE_RANGE
+        if not low_size <= len(palette) <= high_size:
+            raise ValueError(
+                f"v9.6 palette size {len(palette)} outside {self.PALETTE_SIZE_RANGE}"
+            )
+        slots = [str(item.get("slot", "")) for item in palette]
+        if len(slots) != len(set(slots)):
+            raise ValueError("duplicate v9.6 clutter palette slot")
+        by_role: dict[str, list[dict[str, Any]]] = {role: [] for role in self.CLUSTER_ROLES}
+        decor = []
+        for item in palette:
+            role = str(item.get("role"))
+            if role in by_role:
+                by_role[role].append(item)
+            elif role == "decor":
+                decor.append(item)
+            else:
+                raise ValueError(f"unknown v9.6 clutter role: {role!r}")
+            if str(item.get("slot_class") or "prop") != "prop":
+                raise ValueError("v9.6 clutter must use movable free-body props")
+            if str(item.get("support") or "shelf_standing") != "shelf_standing":
+                raise ValueError("v9.6 palette objects must be standing free bodies")
+            if str(item.get("category", "")) in self.EXCLUDED_CATEGORIES:
+                raise ValueError(f"v9.6 palette contains excluded category {item.get('category')!r}")
+        for role, members in by_role.items():
+            low, high = self.CLUSTER_MEMBERS_PER_LEG
+            if not low <= len(members) <= high:
+                raise ValueError(f"v9.6 {role} must hold {low}-{high} members")
+            for item in members:
+                if str(item.get("category", "")).lower() not in self.VESSEL_CATEGORIES:
+                    raise ValueError(
+                        f"v9.6 cluster member category is not approved: {item.get('category')!r}"
+                    )
+                dimensions = [float(value) for value in item.get("dimensions_m", [])]
+                if len(dimensions) != 3 or not 0.15 <= dimensions[2] <= 0.25:
+                    raise ValueError(
+                        f"v9.6 cluster member height is outside 0.15-0.25 m: {dimensions}"
+                    )
+        if not 6 <= len(decor) <= 10:
+            raise ValueError("v9.6 palette must contain 6-10 decor objects")
+        # The V9 two-per-category cap exists to keep decor from repeating.  A
+        # cluster is deliberately made of like objects, so the cap applies to
+        # decor only.
+        counts: dict[str, int] = {}
+        for item in decor:
+            category = str(item.get("category", "object"))
+            counts[category] = counts.get(category, 0) + 1
+            if counts[category] > 2:
+                raise ValueError(f"v9.6 decor category cap exceeded for {category!r}")
+        return palette
+
+    def _cluster_members(self, layout: dict[str, Any], role: str) -> list[dict[str, Any]]:
+        palette_by_slot = {str(item["slot"]): item for item in self._palette()}
+        return [
+            item
+            for item in list(layout.get("objects") or [])
+            if str(palette_by_slot[str(item["palette_slot"])].get("role")) == role
+        ]
+
+    def _layout(self) -> dict[str, Any]:
+        row = self._pact_manifest_row or {}
+        layout = PactPlaceCorridorV5Sampler._layout(self)
+        layout_side = layout.get("intrusion_side")
+        if layout_side is not None and str(layout_side) != str(row.get("intrusion_side")):
+            raise ValueError("v9.6 layout panel side does not match its manifest row")
+        if not layout.get("legacy_panel_active"):
+            raise ValueError("v9.6 requires one active legacy side panel")
+        for role in self.CLUSTER_ROLES:
+            members = self._cluster_members(layout, role)
+            low, high = self.CLUSTER_MEMBERS_PER_LEG
+            if not low <= len(members) <= high:
+                raise ValueError(f"v9.6 layout must activate {low}-{high} {role} members")
+            record = dict(layout.get(role) or {})
+            if float(record.get("span_along_line_m", 0.0)) < self.MIN_CLUSTER_SPAN_M - 1e-9:
+                raise ValueError(
+                    f"v9.6 {role} silhouette is below the {self.MIN_CLUSTER_SPAN_M} m "
+                    "resolving-power floor"
+                )
+            if float(record.get("gap_m", 1.0)) > self.MAX_CLUSTER_GAP_M + 1e-9:
+                raise ValueError(f"v9.6 {role} inter-item gap exceeds the contiguity ceiling")
+        return layout
+
+    def _draw_theta(self):
+        th = PactPlaceCorridorV5Sampler._draw_theta(self)
+        panel_active = bool(th["pact_clutter_layout"].get("legacy_panel_active"))
+        th["pact_v9_legacy_panel"] = {
+            "present": bool(th.get("protrusion_present")),
+            "name": th.get("protr_name"),
+            "side": th.get("protr_wall"),
+            "center": th.get("protr_center"),
+            "half": th.get("protr_half"),
+        }
+        if not panel_active:
+            raise ValueError("v9.6 requires the panel to stay active")
+        th["pact_v9_legacy_panel_active"] = True
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_clutter_workspace_bounds_m"] = [
+            list(self.CLUTTER_WORKSPACE_LOW),
+            list(self.CLUTTER_WORKSPACE_HIGH),
+        ]
+        layout = th["pact_clutter_layout"]
+        hazards = []
+        for role in self.CLUSTER_ROLES:
+            for member in self._cluster_members(layout, role):
+                hazards.append(
+                    {
+                        "name": f"pact_cluster_{role}_{member['palette_slot']}",
+                        "role": role,
+                        "slot": str(member["palette_slot"]),
+                        "uid": str(member["uid"]),
+                        "center": [float(value) for value in member["center_m"]],
+                        "half": [float(value) for value in member["half_m"]],
+                        "phase": "inbound" if role == "inbound_cluster" else "outbound",
+                    }
+                )
+        th.update(
+            {
+                "pact_v9_hazards": hazards,
+                "pact_v9_hazard_list_source": "active_hidden_panel_plus_two_objaverse_clusters",
+                "pact_v9_vessels_added_to_obstacle_aabbs": True,
+                "pact_v96_cluster_roles": list(self.CLUSTER_ROLES),
+            }
+        )
+        return th
+
+    def _apply_theta(self, env, th):
+        PactPlaceCorridorV9Sampler._apply_theta(self, env, th)
+        layout = th["pact_clutter_layout"]
+        unions = []
+        for role in self.CLUSTER_ROLES:
+            posed = [item for item in th["pact_v9_hazards"] if str(item.get("role")) == role]
+            if not posed:
+                continue
+            lows = np.array([np.array(i["center"]) - np.array(i["half"]) for i in posed])
+            highs = np.array([np.array(i["center"]) + np.array(i["half"]) for i in posed])
+            low, high = lows.min(axis=0), highs.max(axis=0)
+            unions.append(
+                {
+                    "role": role,
+                    "member_slots": [str(i["slot"]) for i in posed],
+                    "union_center_m": ((low + high) / 2.0).tolist(),
+                    "union_half_m": ((high - low) / 2.0).tolist(),
+                    "union_extent_m": (high - low).tolist(),
+                    "declared_span_m": float(dict(layout.get(role) or {}).get("span_along_line_m", 0.0)),
+                }
+            )
+        th["pact_v96_cluster_unions"] = unions
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV97HazardSampler(PactPlaceCorridorV96ClusterSampler):
+    """V9.6 with the hazard's *width* decontracted and left to measured subtense.
+
+    V9.6 required each leg to present a contiguous silhouette of at least
+    0.25 m.  That number was a proxy for the skin's resolving power, not a
+    property of it.  The sensor's requirement is angular -- a 0.120 m hazard
+    clears two pixels out to R = 0.58 m, and the ranges W1 measured on the frozen
+    trajectories are 0.11-0.14 m -- so a hazard narrow enough to fit the
+    corridor's 0.120 m budget is still resolvable where it matters.
+
+    This subclass therefore admits one to four members per leg and applies no
+    span floor.  Everything else, including the 40-sensor suite, the encoder, the
+    observation contract and the intrusion panel, is inherited untouched.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_7_subtense"
+    CLUSTER_MEMBERS_PER_LEG = (1, 4)
+    PALETTE_SIZE_RANGE = (8, 16)
+    MIN_CLUSTER_SPAN_M = 0.0
+
+
+class PactPlaceCorridorV98PendantSampler(PactPlaceCorridorV93Sampler):
+    """Settled V9.5 clutter plus one symmetric, kinematic ceiling pendant.
+
+    The pendant is deliberately independent of panel side.  It is registered
+    as a real 3-D obstacle so the privileged expert's surface-distance speed
+    law sees the fixture, while the production student still receives the
+    unchanged observation suite.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_8_pendant"
+    PENDANT_BODY = "pact_clutter_mount_ceiling"
+    PENDANT_GEOM = "pact_clutter_mount_ceiling_g"
+
+    def _pendant_fixture(self) -> dict[str, Any]:
+        from pact_place_v98_pendant_contract import validate_pendant_geometry
+
+        fixture = dict(
+            (self._pact_manifest_row or {}).get("pact_mounted_ceiling_fixture") or {}
+        )
+        if str(fixture.get("support") or "") != "ceiling":
+            raise ValueError("V9.8 requires one ceiling-mounted pendant fixture")
+        validate_pendant_geometry(fixture.get("center_m"), fixture.get("half_m"))
+        return fixture
+
+    def _pendant_parked(self) -> bool:
+        """Diagnostic control: run the identical scene with no active pendant.
+
+        This exists so a V9.8 expert-screen failure can be attributed. Parking
+        the fixture leaves the inherited V9.5 clutter and panel untouched, so a
+        parked run isolates the pendant from the rest of the layout. It is never
+        set on an admission or collection row.
+        """
+        return bool((self._pact_manifest_row or {}).get("pact_v98_pendant_parked"))
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        parked = self._pendant_parked()
+        th["pact_v98_pendant_parked"] = parked
+        th["pact_v98_pendant_fixture"] = {} if parked else self._pendant_fixture()
+        th["pact_v98_mounted_clutter_is_kinematic"] = True
+        th["pact_v98_lateral_lane_cost_m"] = 0.0
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        from pact_place_v98_pendant_contract import PENDANT_BODY, PENDANT_GEOM
+
+        self._mocap_set(env, PENDANT_BODY, [0.0, 0.0, -2.0])
+        if th.get("pact_v98_pendant_parked"):
+            th["pact_v98_active_mount_body"] = None
+            mujoco.mj_forward(env.current_model, env.current_data)
+            return
+        item = dict(th["pact_v98_pendant_fixture"])
+        center = np.asarray(item["center_m"], dtype=float)
+        half = np.asarray(item["half_m"], dtype=float)
+        geom = env.current_model.geom(PENDANT_GEOM)
+        env.current_model.geom_size[int(geom.id)] = half
+        self._mocap_set(env, PENDANT_BODY, center.tolist())
+        hazard = {
+            **item,
+            "name": "pact_mounted_ceiling_fixture",
+            "body": PENDANT_BODY,
+            "role": "ceiling_fixture",
+            "center": center.tolist(),
+            "half": half.tolist(),
+            "phase": "inbound_and_outbound",
+            "kinematic": True,
+            "lateral_lane_cost_m": 0.0,
+        }
+        th.setdefault("obstacle_aabbs", []).append([center.tolist(), half.tolist()])
+        th.setdefault("pact_v9_hazards", []).append(hazard)
+        th["pact_v98_active_mount_body"] = PENDANT_BODY
+        th["pact_v98_lateral_lane_cost_m"] = 0.0
+        mujoco.mj_forward(env.current_model, env.current_data)
 
 
 class PactPlaceTCPMoveSequence(TCPMoveSequence):
@@ -2424,15 +3157,39 @@ class PactPlaceTCPMoveSequence(TCPMoveSequence):
 class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
     """Obstacle-aware inbound pick and higher-clearance outbound carry/place."""
 
-    # Unused by this class: inbound motion is PactCollisionCorridorPolicy's
-    # trajectory, not _bow_segment. _bow_segment is called only for outbound.
+    _AABB_SAMPLES = (
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.7, 0.0),
+        (-1.0, -0.7, 0.0),
+        (-1.0, 0.0, 0.7),
+        (-1.0, 0.0, -0.7),
+        (0.0, 0.9, 0.0),
+        (0.0, -0.9, 0.0),
+        (0.0, 0.0, -0.9),
+    )
+    # V9 can reuse its movable route blocker in both travel directions.  The
+    # empty inbound envelope is narrower than the loaded outbound envelope.
     INBOUND_ENVELOPE_HALF_Y = 0.11
-    INBOUND_SAFE_GAP = 0.10
+    INBOUND_SAFE_GAP = 0.04
     OUTBOUND_ENVELOPE_HALF_Y = 0.15
     OUTBOUND_SAFE_GAP = 0.14
+    # Four centimetres is the deliberate bottle surface gap.  V9.2 composes it
+    # with the panel's larger clearance instead of treating them as opposed
+    # chicane walls.
+    V9_VESSEL_SAFE_GAP = 0.04
+    # Mounted fixtures are rigid scene structure.  Their route envelope is
+    # deliberately smaller than the loaded-vessel envelope so the preview
+    # remains feasible while still producing a geometry-dependent detour.
+    MOUNTED_FIXTURE_ENVELOPE_HALF_Y = 0.10
+    MOUNTED_FIXTURE_SAFE_GAP = 0.025
+    V95_MIN_FIXTURE_BOW_M = 0.040
+    V95_MIN_PLANNED_LINK_CLEARANCE_M = 0.020
+    V95_BOW_SEARCH_STEP_M = 0.010
     OUTBOUND_CARRY_RAISE_M = 0.0
     OUTBOUND_PASS_SPEED = 0.045
     OUTSIDE_STAGING_X_M = TUBE_X0 - 0.10
+    V9_OUTSIDE_STAGING_X_M = TUBE_X0 - 0.14
+    V93_OUTSIDE_STAGING_X_M = TUBE_X0 - 0.22
     # Development probes at +/-12 mm did not improve outbound execution. Keep
     # the validated corridor expert's selected grasp unchanged.
     GRASP_WORLD_Z_OFFSET_M = 0.0
@@ -2450,6 +3207,341 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         self.inbound_deflected = False
         self.outbound_deflected = False
         self._pact_place_bow_diagnostics = self._empty_bow_diagnostics()
+        self._sensor_cam_ids: list[int] | None = None
+        self._pact_detected_hazard_names: set[str] = set()
+        self._pact_detected_hazards: list[dict[str, Any]] = []
+        self._pact_maneuver_interactions: list[dict[str, Any]] = []
+        self._pact_active_maneuver: str | None = None
+
+    def _v9_enabled(self) -> bool:
+        version = str(
+            (getattr(self.task, "scene_params", {}) or {}).get(
+                "pact_place_environment_version", ""
+            )
+        )
+        return version in {
+            "pact_place_corridor_v9",
+            "pact_place_corridor_v9_2",
+            "pact_place_corridor_v9_3",
+            "pact_place_corridor_v9_4_mounted_preview",
+            "pact_place_corridor_v9_5_low_wall",
+            "pact_place_corridor_v9_8_pendant",
+        }
+
+    def _preferred_v9_waypoint_side(self) -> float | None:
+        """Return +1/-1 for the single lane left open by the active panel."""
+        th = getattr(self.task, "scene_params", {}) or {}
+        if th.get("pact_v9_legacy_panel_active"):
+            wall = str(th.get("protr_wall") or "")
+            if wall == "left":
+                return -1.0
+            if wall == "right":
+                return 1.0
+        layout = th.get("pact_clutter_layout") or {}
+        direction = str(layout.get("expected_bow_direction") or "")
+        if direction == "+y":
+            return 1.0
+        if direction == "-y":
+            return -1.0
+        return None
+
+    def _embed_T(self) -> np.ndarray:
+        """Return the world-from-task transform used by enclosure experts."""
+        embed = (getattr(self.task, "scene_params", {}) or {}).get("embed")
+        if not embed:
+            return np.eye(4)
+        base_x, base_y, yaw = map(float, embed)
+        cosine, sine = np.cos(yaw), np.sin(yaw)
+        transform = np.eye(4)
+        transform[:3, :3] = np.asarray(
+            [
+                [cosine, -sine, 0.0],
+                [sine, cosine, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+        transform[:3, 3] = np.asarray([base_x, base_y, 0.0], dtype=float)
+        return transform
+
+    def _hazard_list(self) -> list[dict[str, Any]]:
+        """Return panel and V9 vessel hazards in task-local coordinates."""
+        th = getattr(self.task, "scene_params", {}) or {}
+        hazards: list[dict[str, Any]] = []
+        if th.get("protrusion_present") and "protr_center" in th:
+            hazards.append(
+                {
+                    "name": str(th.get("protr_name", "pact_intrusion")),
+                    "role": "panel",
+                    "avoidance": "panel_bow",
+                    "center": [float(value) for value in th["protr_center"]],
+                    "half": [float(value) for value in th["protr_half"]],
+                    "wall": str(th.get("protr_wall", "right")),
+                }
+            )
+        for hazard in list(th.get("pact_v9_hazards") or []):
+            if "center" not in hazard or "half" not in hazard:
+                continue
+            hazards.append(
+                {
+                    **hazard,
+                    "name": str(hazard["name"]),
+                    "center": [float(value) for value in hazard["center"]],
+                    "half": [float(value) for value in hazard["half"]],
+                    "avoidance": {
+                        "inbound_vessel": "vessel_deflect",
+                        "wall_fixture": "mounted_fixture_bow",
+                        "ceiling_fixture": "mounted_fixture_bow",
+                    }.get(str(hazard.get("role")), "vessel_bow"),
+                }
+            )
+        return hazards
+
+    def _sensor_poses(self):
+        model = self.task.env.current_model
+        data = self.task.env.current_data
+        if self._sensor_cam_ids is None:
+            self._sensor_cam_ids = [
+                index
+                for index in range(int(model.ncam))
+                if "_sensor_" in (model.camera(index).name or "")
+            ]
+        for camera_id in self._sensor_cam_ids:
+            yield (
+                np.asarray(data.cam_xpos[camera_id], dtype=float),
+                np.asarray(data.cam_xmat[camera_id], dtype=float).reshape(3, 3),
+            )
+
+    def _protrusion_detected(
+        self, allowed_roles: set[str] | None = None
+    ) -> dict[str, Any] | None:
+        """Return the identity of the first currently detectable hazard.
+
+        This is the same sampled AABB surface gate as the reach expert: the
+        real sensor poses, 22.5 degree half-FOV, and 0.85 m derated range are
+        used.  Returning the hazard record prevents a later detection from
+        accidentally reusing the panel's center and wall.
+        """
+        if not self._v9_enabled():
+            return None
+        rng_eff = SENSOR_RANGE * SENSOR_RANGE_DERATE
+        transform = self._embed_T()
+        for hazard in self._hazard_list():
+            if hazard["name"] in self._pact_detected_hazard_names:
+                continue
+            if allowed_roles is not None and hazard.get("role") not in allowed_roles:
+                continue
+            center = np.asarray(hazard["center"], dtype=float)
+            half = np.asarray(hazard["half"], dtype=float)
+            points = [
+                (transform @ np.append(center + half * np.asarray(sample), 1.0))[:3]
+                for sample in self._AABB_SAMPLES
+            ]
+            for position, xmat in self._sensor_poses():
+                forward = -xmat[:, 2]
+                for point in points:
+                    delta = point - position
+                    distance = float(np.linalg.norm(delta))
+                    if distance < 1e-9 or distance > rng_eff:
+                        continue
+                    if float(np.dot(delta / distance, forward)) > SENSOR_HALF_FOV_COS:
+                        return dict(hazard)
+        return None
+
+    def _phase_for_hazard(self, hazard: dict[str, Any]) -> bool:
+        try:
+            phase = str(self.get_phase())
+        except Exception:
+            return False
+        role = str(hazard.get("role"))
+        if role == "inbound_vessel":
+            return phase in {"approach", "insert", "advance", "pregrasp"}
+        if role in {"wall_fixture", "ceiling_fixture"}:
+            return phase.startswith("inbound") or phase.startswith("outbound")
+        if role in {"panel", "outbound_vessel"}:
+            return phase.startswith("outbound")
+        return False
+
+    def _active_maneuver_for_phase(self) -> str | None:
+        try:
+            phase = str(self.get_phase())
+        except Exception:
+            return self._pact_active_maneuver
+        if phase in {"deflect", "pass_protrusion"}:
+            return self._pact_active_maneuver or "vessel deflect"
+        if phase.startswith("outbound") and "pass" in phase:
+            if any(
+                self._pact_place_bow_diagnostics.get(prefix, {}).get(
+                    "accepted_bow_m", 0.0
+                )
+                for prefix in (
+                    "outbound_wall_fixture",
+                    "outbound_ceiling_fixture",
+                )
+            ):
+                return "mounted fixture bow"
+            if self._pact_place_bow_diagnostics.get("outbound_vessel", {}).get(
+                "accepted_bow_m", 0.0
+            ):
+                return "vessel bow"
+            return "panel bow"
+        return self._pact_active_maneuver
+
+    def _handle_detected_hazard(self, hazard: dict[str, Any]) -> None:
+        name = str(hazard["name"])
+        phase = str(self.get_phase())
+        previous = self._active_maneuver_for_phase()
+        if previous and hazard.get("avoidance") not in {previous, None}:
+            self._pact_maneuver_interactions.append(
+                {
+                    "step": int(getattr(self, "_pact_place_control_step", 0)),
+                    "policy_phase": phase,
+                    "existing_maneuver": previous,
+                    "detected_hazard": name,
+                    "action": "reported_without_silent_overwrite",
+                }
+            )
+        self._pact_detected_hazard_names.add(name)
+        self._pact_detected_hazards.append(
+            {
+                **hazard,
+                # This online expert-policy diagnostic is an AABB/cone proxy.  It
+                # must never be presented as evidence from the production PACT
+                # proximity tensor; raw sensor admission is performed separately.
+                "detection_source": "sampled_aabb_cone_proxy_not_raw_proximity",
+                "step": int(getattr(self, "_pact_place_control_step", 0)),
+                "policy_phase": phase,
+            }
+        )
+        if hazard.get("avoidance") == "vessel_deflect" and self._phase_for_hazard(hazard):
+            if self.inbound_deflected:
+                return
+            self._replan_on_detection(hazard)
+        elif hazard.get("avoidance") in {
+            "panel_bow",
+            "vessel_bow",
+            "mounted_fixture_bow",
+        }:
+            self._pact_active_maneuver = {
+                "panel_bow": "panel bow",
+                "vessel_bow": "vessel bow",
+                "mounted_fixture_bow": "mounted fixture bow",
+            }[str(hazard.get("avoidance"))]
+
+    def _inbound_deflect_segments(
+        self, current: np.ndarray, target: np.ndarray, hazard: dict[str, Any]
+    ) -> list[TCPMoveSegment] | None:
+        center_local = np.asarray(hazard["center"], dtype=float)
+        half = np.asarray(hazard["half"], dtype=float)
+        center = (self._embed_T() @ np.append(center_local, 1.0))[:3]
+        delta_x = float(target[0] - current[0])
+        if abs(delta_x) < 1e-6:
+            return None
+        t_cross = float((center[0] - current[0]) / delta_x)
+        if not 0.02 < t_cross < 0.98:
+            return None
+        cross = current + t_cross * (target - current)
+        obstacle_side = 1.0 if center[1] >= 0.0 else -1.0
+        inner_face_y = center[1] - obstacle_side * half[1]
+        straight_clearance = (
+            obstacle_side * (inner_face_y - cross[1]) - self.INBOUND_ENVELOPE_HALF_Y
+        )
+        required_bow = self.INBOUND_SAFE_GAP - straight_clearance
+        lateral_limit = max(
+            0.0,
+            float((getattr(self.task, "scene_params", {}) or {}).get("ap_w", 0.85))
+            / 2.0
+            - self.INBOUND_ENVELOPE_HALF_Y
+            - self.APERTURE_EDGE_RESERVE,
+        )
+        if required_bow <= 0.0 or required_bow > lateral_limit:
+            return None
+        travel_direction = 1.0 if delta_x > 0.0 else -1.0
+        longitudinal_pad = 0.05
+        before_x = center[0] - travel_direction * (half[0] + longitudinal_pad)
+        after_x = center[0] + travel_direction * (half[0] + longitudinal_pad)
+        t_before = float(np.clip((before_x - current[0]) / delta_x, 0.04, 0.90))
+        t_after = float(np.clip((after_x - current[0]) / delta_x, t_before + 0.02, 0.96))
+        before = current + t_before * (target - current)
+        after = current + t_after * (target - current)
+        waypoint_y = float(
+            np.clip(
+                cross[1] - obstacle_side * required_bow,
+                -lateral_limit,
+                lateral_limit,
+            )
+        )
+        before[1] = waypoint_y
+        after[1] = waypoint_y
+        return [before, after]
+
+    def _replan_on_detection(self, hazard: dict[str, Any] | str) -> None:
+        """Rebuild only the remaining inbound sequence around ``hazard``."""
+        if isinstance(hazard, str):
+            hazard = next(
+                item for item in self._hazard_list() if item["name"] == hazard
+            )
+        if hazard.get("avoidance") != "vessel_deflect":
+            return
+        if self.action_idx >= len(self.action_primitives):
+            return
+        current_primitive = self.action_primitives[self.action_idx]
+        if not isinstance(current_primitive, TCPMoveSequence):
+            return
+        if len(current_primitive.move_segments) < 2:
+            return
+        current = self.robot_view.get_move_group(
+            self.robot_view.get_gripper_movegroup_ids()[0]
+        ).leaf_frame_to_world.copy()
+        target_pregrasp = current_primitive.move_segments[-2].end_pose.copy()
+        target_grasp = current_primitive.move_segments[-1].end_pose.copy()
+        waypoints = self._inbound_deflect_segments(
+            current, target_pregrasp[:3, 3].copy(), hazard
+        )
+        if waypoints is None:
+            log.warning("[PactPlace] detected vessel has no admitted inbound detour")
+            return
+        rotation = target_pregrasp[:3, :3]
+        waypoint_poses = []
+        for point in waypoints:
+            pose = np.eye(4)
+            pose[:3, :3] = rotation
+            pose[:3, 3] = point
+            waypoint_poses.append(pose)
+        replacement = self._sequence(
+            [
+                TCPMoveSegment(
+                    name="deflect",
+                    start_pose=current,
+                    end_pose=waypoint_poses[0],
+                    speed=self.policy_config.speed_fast,
+                ),
+                TCPMoveSegment(
+                    name="pass_protrusion",
+                    start_pose=waypoint_poses[0],
+                    end_pose=waypoint_poses[1],
+                    speed=self.PASS_SPEED,
+                ),
+                TCPMoveSegment(
+                    name="advance",
+                    start_pose=waypoint_poses[1],
+                    end_pose=target_pregrasp,
+                    speed=self.policy_config.speed_slow,
+                ),
+                TCPMoveSegment(
+                    name="grasp",
+                    start_pose=target_pregrasp,
+                    end_pose=target_grasp,
+                    speed=self.policy_config.speed_slow,
+                ),
+            ],
+            holding=False,
+        )
+        self.action_primitives[self.action_idx] = replacement
+        self.inbound_deflected = True
+        self._pact_active_maneuver = "vessel deflect"
+        self.behavior_class = "scripted_inbound_vessel_deflect"
+        log.info("[PactPlace] DEFLECT around detected vessel %s", hazard["name"])
 
     @staticmethod
     def _empty_bow_record() -> dict[str, Any]:
@@ -2457,6 +3549,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "planned_bow_m": 0.0,
             "accepted_bow_m": 0.0,
             "bow_fallback_taken": False,
+            "straight_clearance_m": None,
+            "required_clearance_m": None,
+            "response_source": None,
         }
 
     @classmethod
@@ -2473,11 +3568,37 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         planned_bow_m: float,
         accepted_bow_m: float,
         bow_fallback_taken: bool,
+        straight_clearance_m: float | None = None,
+        required_clearance_m: float | None = None,
+        response_source: str | None = None,
     ) -> None:
+        previous = self._pact_place_bow_diagnostics.get(
+            prefix, self._empty_bow_record()
+        )
         self._pact_place_bow_diagnostics[prefix] = {
-            "planned_bow_m": float(planned_bow_m),
-            "accepted_bow_m": float(accepted_bow_m),
-            "bow_fallback_taken": bool(bow_fallback_taken),
+            # A compound hazard can be evaluated against several consecutive
+            # segments.  Preserve the strongest admitted bow instead of letting
+            # a later non-crossing segment erase it with zeros.
+            "planned_bow_m": max(
+                float(previous.get("planned_bow_m", 0.0)), float(planned_bow_m)
+            ),
+            "accepted_bow_m": max(
+                float(previous.get("accepted_bow_m", 0.0)), float(accepted_bow_m)
+            ),
+            "bow_fallback_taken": bool(
+                previous.get("bow_fallback_taken") or bow_fallback_taken
+            ),
+            "straight_clearance_m": (
+                previous.get("straight_clearance_m")
+                if straight_clearance_m is None
+                else float(straight_clearance_m)
+            ),
+            "required_clearance_m": (
+                previous.get("required_clearance_m")
+                if required_clearance_m is None
+                else float(required_clearance_m)
+            ),
+            "response_source": response_source or previous.get("response_source"),
         }
 
     def _get_placement_poses(
@@ -2504,6 +3625,16 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         pose[:3, 3] = position
         return pose
 
+    @staticmethod
+    def _route_side_at_x(segment: TCPMoveSegment, obstacle_x: float) -> float:
+        """Choose the lane occupied where this segment crosses an obstacle."""
+        start = segment.start_pose[:3, 3]
+        end = segment.end_pose[:3, 3]
+        dx = float(end[0] - start[0])
+        t = 0.5 if abs(dx) < 1e-9 else float(np.clip((obstacle_x - start[0]) / dx, 0.0, 1.0))
+        cross_y = float(start[1] + t * (end[1] - start[1]))
+        return 1.0 if cross_y >= 0.0 else -1.0
+
     def _bow_segment(
         self,
         segment: TCPMoveSegment,
@@ -2511,9 +3642,26 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         prefix: str,
         envelope_half_y: float,
         safe_gap: float,
+        center: np.ndarray | None = None,
+        half: np.ndarray | None = None,
+        preferred_waypoint_side: float | None = None,
     ) -> tuple[list[TCPMoveSegment], bool]:
         th = getattr(self.task, "scene_params", {}) or {}
-        if not th.get("protrusion_present") or "protr_center" not in th:
+        if center is None or half is None:
+            if not th.get("protrusion_present") or "protr_center" not in th:
+                self._record_bow(
+                    prefix,
+                    planned_bow_m=0.0,
+                    accepted_bow_m=0.0,
+                    bow_fallback_taken=False,
+                )
+                return [segment], False
+            center = np.asarray(th["protr_center"], dtype=float)
+            half = np.asarray(th["protr_half"], dtype=float)
+        else:
+            center = np.asarray(center, dtype=float)
+            half = np.asarray(half, dtype=float)
+        if center.shape != (3,) or half.shape != (3,):
             self._record_bow(
                 prefix,
                 planned_bow_m=0.0,
@@ -2521,8 +3669,6 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 bow_fallback_taken=False,
             )
             return [segment], False
-        center = np.asarray(th["protr_center"], dtype=float)
-        half = np.asarray(th["protr_half"], dtype=float)
         start = segment.start_pose[:3, 3].copy()
         end = segment.end_pose[:3, 3].copy()
         delta_x = float(end[0] - start[0])
@@ -2544,10 +3690,15 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             )
             return [segment], False
         cross = start + t_cross * (end - start)
-        obstacle_side = 1.0 if center[1] >= 0.0 else -1.0
-        inner_face_y = center[1] - obstacle_side * half[1]
+        if preferred_waypoint_side is None:
+            obstacle_side = 1.0 if center[1] >= 0.0 else -1.0
+            waypoint_side = -obstacle_side
+            open_face_y = center[1] + waypoint_side * half[1]
+        else:
+            waypoint_side = 1.0 if preferred_waypoint_side >= 0.0 else -1.0
+            open_face_y = center[1] + waypoint_side * half[1]
         straight_clearance = (
-            obstacle_side * (inner_face_y - cross[1]) - envelope_half_y
+            waypoint_side * (cross[1] - open_face_y) - envelope_half_y
         )
         required_bow = safe_gap - straight_clearance
         if required_bow <= 0.0:
@@ -2574,7 +3725,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         after = start + t_after * (end - start)
         waypoint_y = float(
             np.clip(
-                cross[1] - obstacle_side * required_bow,
+                cross[1] + waypoint_side * required_bow,
                 -lateral_limit,
                 lateral_limit,
             )
@@ -2584,12 +3735,15 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         rotation = segment.end_pose[:3, :3]
         pose_before = self._place_pose(before, rotation)
         pose_after = self._place_pose(after, rotation)
-        actual_bow = float(obstacle_side * (cross[1] - waypoint_y))
+        actual_bow = float(waypoint_side * (waypoint_y - cross[1]))
         self._record_bow(
             prefix,
             planned_bow_m=required_bow,
             accepted_bow_m=actual_bow,
             bow_fallback_taken=False,
+            straight_clearance_m=straight_clearance,
+            required_clearance_m=safe_gap,
+            response_source="actual_episode_clearance_geometry",
         )
         log.info(
             f"[PactPlace] {prefix} DEFLECT: straight clearance "
@@ -2632,6 +3786,135 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 ),
             ],
             True,
+        )
+
+    def _v95_exact_fixture_clearance(self, pose: np.ndarray, fixture: dict[str, Any]) -> float | None:
+        """Solve one IK pose and measure exact distal-link clearance to the fixture."""
+        try:
+            from pact_geom_distance import true_distance
+        except ImportError:
+            return None
+        robot_view = self.task.env.current_robot.robot_view
+        kinematics = self.task.env.current_robot.kinematics
+        gripper_mg_id = robot_view.get_gripper_movegroup_ids()[0]
+        saved = {
+            key: np.asarray(value, dtype=float).copy()
+            for key, value in robot_view.get_qpos_dict().items()
+        }
+        solution = kinematics.ik(
+            gripper_mg_id,
+            pose,
+            robot_view.move_group_ids(),
+            saved,
+            base_pose=robot_view.base.pose,
+        )
+        if solution is None:
+            return None
+        model, data = self.task.env.current_model, self.task.env.current_data
+        fixture_gid = int(model.geom(f"{fixture['body']}_g").id)
+        robot_gids = []
+        for gid in range(int(model.ngeom)):
+            body = model.body(int(model.geom_bodyid[gid])).name or ""
+            if (
+                "gripper/left_" in body
+                or "gripper/right_" in body
+                or "gripper/base" in body
+                or body.endswith("wrist_cam_body")
+                or any(
+                    token in body
+                    for token in (
+                        "fr3_link5", "fr3_link6", "fr3_link7",
+                        "link5_skin", "link5_front_skin", "link5_back_skin",
+                        "link6_skin", "link7_skin",
+                    )
+                )
+            ):
+                if int(model.geom_contype[gid]) != 0 or int(model.geom_conaffinity[gid]) != 0:
+                    robot_gids.append(gid)
+        try:
+            robot_view.set_qpos_dict(solution)
+            mujoco.mj_forward(model, data)
+            return float(true_distance(model, data, robot_gids, [fixture_gid]))
+        finally:
+            robot_view.set_qpos_dict(saved)
+            mujoco.mj_forward(model, data)
+
+    def _v95_link_aware_fixture_segment(
+        self, segment: TCPMoveSegment, fixture: dict[str, Any], *, prefix: str
+    ) -> tuple[list[TCPMoveSegment], bool]:
+        """Search one lateral degree of freedom using exact IK/link clearance."""
+        center = np.asarray(fixture["center"], dtype=float)
+        half = np.asarray(fixture["half"], dtype=float)
+        start = segment.start_pose[:3, 3].copy()
+        end = segment.end_pose[:3, 3].copy()
+        dx = float(end[0] - start[0])
+        if abs(dx) < 1e-9:
+            return [segment], False
+        t_cross = float((center[0] - start[0]) / dx)
+        if not 0.02 < t_cross < 0.98:
+            return [segment], False
+        cross = start + t_cross * (end - start)
+        support_side = 1.0 if str(fixture.get("support")) == "wall_left" else -1.0
+        waypoint_side = -support_side
+        aperture_width = float((getattr(self.task, "scene_params", {}) or {}).get("ap_w", 0.85))
+        lateral_limit = aperture_width / 2.0 - self.MOUNTED_FIXTURE_ENVELOPE_HALF_Y - self.APERTURE_EDGE_RESERVE
+        max_bow = max(0.0, waypoint_side * (waypoint_side * lateral_limit - cross[1]))
+        candidate_bows = np.arange(
+            self.V95_MIN_FIXTURE_BOW_M,
+            max_bow + self.V95_BOW_SEARCH_STEP_M * 0.5,
+            self.V95_BOW_SEARCH_STEP_M,
+        )
+        travel_side = 1.0 if dx > 0.0 else -1.0
+        before_x = center[0] - travel_side * (half[0] + 0.08)
+        after_x = center[0] + travel_side * (half[0] + 0.08)
+        t_before = float(np.clip((before_x - start[0]) / dx, 0.04, 0.90))
+        t_after = float(np.clip((after_x - start[0]) / dx, t_before + 0.02, 0.96))
+        rotation = segment.end_pose[:3, :3]
+        evaluated = 0
+        for bow in candidate_bows:
+            evaluated += 1
+            waypoint_y = float(cross[1] + waypoint_side * bow)
+            before = start + t_before * (end - start)
+            after = start + t_after * (end - start)
+            before[1] = waypoint_y
+            after[1] = waypoint_y
+            poses = (
+                self._place_pose(before, rotation),
+                self._place_pose(np.asarray([center[0], waypoint_y, cross[2]]), rotation),
+                self._place_pose(after, rotation),
+            )
+            clearances = [self._v95_exact_fixture_clearance(pose, fixture) for pose in poses]
+            if any(value is None for value in clearances):
+                continue
+            minimum = min(float(value) for value in clearances if value is not None)
+            if minimum < self.V95_MIN_PLANNED_LINK_CLEARANCE_M:
+                continue
+            self._record_bow(
+                prefix,
+                planned_bow_m=float(bow),
+                accepted_bow_m=float(bow),
+                bow_fallback_taken=False,
+                straight_clearance_m=None,
+                required_clearance_m=self.V95_MIN_PLANNED_LINK_CLEARANCE_M,
+                response_source="exact_ik_link5_link6_fixture_clearance_search",
+            )
+            self._pact_place_bow_diagnostics[prefix].update(
+                {
+                    "planned_min_link_clearance_m": minimum,
+                    "link_clearance_candidate_count": evaluated,
+                    "planning_basis": "exact_mujoco_geom_distance_after_ik",
+                }
+            )
+            return (
+                [
+                    TCPMoveSegment(name=f"{prefix}_approach", start_pose=segment.start_pose, end_pose=poses[0], speed=self.policy_config.speed_fast),
+                    TCPMoveSegment(name=f"{prefix}_pass", start_pose=poses[0], end_pose=poses[2], speed=self.PASS_SPEED),
+                    TCPMoveSegment(name=f"{prefix}_exit", start_pose=poses[2], end_pose=segment.end_pose, speed=self.policy_config.speed_slow),
+                ],
+                True,
+            )
+        raise ValueError(
+            f"V9.5 has no exact link-clear fixture bow for {prefix}; candidates={evaluated}"
         )
 
     def _sequence(
@@ -2700,6 +3983,137 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         inbound = pick_primitives[1]
         inbound_pre = inbound._move_segments[-2]
         stock_inbound_grasp = inbound._move_segments[-1]
+        inbound_prefix = list(inbound._move_segments[:-2])
+        if self._v9_enabled():
+            inbound_hazard_role = (
+                "inbound_vessel"
+                if str(
+                    (getattr(self.task, "scene_params", {}) or {}).get(
+                        "pact_place_environment_version", ""
+                    )
+                )
+                in {
+                    "pact_place_corridor_v9_3",
+                    "pact_place_corridor_v9_4_mounted_preview",
+                    "pact_place_corridor_v9_5_low_wall",
+                    "pact_place_corridor_v9_8_pendant",
+                }
+                else "outbound_vessel"
+            )
+            route_blocker = next(
+                (
+                    item
+                    for item in self._hazard_list()
+                    if item.get("role") == inbound_hazard_role
+                ),
+                None,
+            )
+            if route_blocker is not None:
+                candidates = (
+                    list(inbound._move_segments[:-1])
+                    if inbound_hazard_role == "inbound_vessel"
+                    else [inbound_pre]
+                )
+                inbound_bow = []
+                inbound_vessel_bowed = False
+                for candidate in candidates:
+                    pieces, bowed = self._bow_segment(
+                        candidate,
+                        prefix="inbound_vessel",
+                        envelope_half_y=self.INBOUND_ENVELOPE_HALF_Y,
+                        safe_gap=self.INBOUND_SAFE_GAP,
+                        center=np.asarray(route_blocker["center"], dtype=float),
+                        half=np.asarray(route_blocker["half"], dtype=float),
+                        preferred_waypoint_side=(
+                            self._preferred_v9_waypoint_side()
+                        ),
+                    )
+                    inbound_bow.extend(pieces)
+                    inbound_vessel_bowed |= bowed
+                if inbound_hazard_role == "inbound_vessel":
+                    inbound_prefix = inbound_bow
+                    cross_hazard = next(
+                        (
+                            item
+                            for item in self._hazard_list()
+                            if item.get("role") == "outbound_vessel"
+                        ),
+                        None,
+                    )
+                    if cross_hazard is not None:
+                        cross_segments: list[TCPMoveSegment] = []
+                        for candidate in inbound_prefix:
+                            pieces, bowed = self._bow_segment(
+                                candidate,
+                                prefix="inbound_cross_vessel",
+                                envelope_half_y=self.INBOUND_ENVELOPE_HALF_Y,
+                                safe_gap=self.INBOUND_SAFE_GAP,
+                                center=np.asarray(cross_hazard["center"], dtype=float),
+                                half=np.asarray(cross_hazard["half"], dtype=float),
+                                preferred_waypoint_side=self._preferred_v9_waypoint_side(),
+                            )
+                            cross_segments.extend(pieces)
+                            inbound_vessel_bowed |= bowed
+                        inbound_prefix = cross_segments
+                else:
+                    inbound_prefix.extend(inbound_bow)
+                self.inbound_deflected = bool(inbound_vessel_bowed)
+            else:
+                inbound_prefix.append(inbound_pre)
+        else:
+            inbound_prefix.append(inbound_pre)
+        environment_version = str(
+            (getattr(self.task, "scene_params", {}) or {}).get(
+                "pact_place_environment_version", ""
+            )
+        )
+        if environment_version in {
+            "pact_place_corridor_v9_4_mounted_preview",
+            "pact_place_corridor_v9_5_low_wall",
+        }:
+            fixture_roles = (
+                ("wall_fixture", "ceiling_fixture")
+                if environment_version == "pact_place_corridor_v9_4_mounted_preview"
+                else ("wall_fixture",)
+            )
+            for fixture_role in fixture_roles:
+                fixture = next(
+                    (
+                        item
+                        for item in self._hazard_list()
+                        if item.get("role") == fixture_role
+                    ),
+                    None,
+                )
+                if fixture is None:
+                    continue
+                fixture_segments: list[TCPMoveSegment] = []
+                fixture_bowed = False
+                prefix = f"inbound_{fixture_role}"
+                for candidate_segment in inbound_prefix:
+                    if environment_version == "pact_place_corridor_v9_5_low_wall":
+                        pieces, bowed = self._v95_link_aware_fixture_segment(
+                            candidate_segment, fixture, prefix=prefix
+                        )
+                    else:
+                        route_side = self._route_side_at_x(
+                            candidate_segment, float(fixture["center"][0])
+                        )
+                        pieces, bowed = self._bow_segment(
+                            candidate_segment,
+                            prefix=prefix,
+                            envelope_half_y=self.MOUNTED_FIXTURE_ENVELOPE_HALF_Y,
+                            safe_gap=self.MOUNTED_FIXTURE_SAFE_GAP,
+                            center=np.asarray(fixture["center"], dtype=float),
+                            half=np.asarray(fixture["half"], dtype=float),
+                            preferred_waypoint_side=(
+                                route_side if fixture_role == "ceiling_fixture" else None
+                            ),
+                        )
+                    fixture_segments.extend(pieces)
+                    fixture_bowed |= bowed
+                inbound_prefix = fixture_segments
+                self.inbound_deflected |= fixture_bowed
         adjusted_grasp_pose = stock_inbound_grasp.end_pose.copy()
         adjusted_grasp_pose[2, 3] += self.GRASP_WORLD_Z_OFFSET_M
         if not self.check_feasible_ik(adjusted_grasp_pose):
@@ -2718,7 +4132,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             gripper_empty_threshold=self.policy_config.gripper_empty_threshold,
             tcp_pos_err_threshold=self.policy_config.tcp_pos_err_threshold,
             tcp_rot_err_threshold=self.policy_config.tcp_rot_err_threshold,
-            move_segments=inbound._move_segments[:-1] + [inbound_grasp],
+            move_segments=inbound_prefix + [inbound_grasp],
         )
         stock_lift = pick_primitives[3]._move_segments[-1]
         adjusted_lift_pose = stock_lift.end_pose.copy()
@@ -2732,7 +4146,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             speed=stock_lift.speed,
         )
         pick_primitives[3] = self._sequence([lift], holding=True)
-        self.inbound_deflected = pick_helper.behavior_class == "deflect"
+        self.inbound_deflected = bool(
+            self.inbound_deflected or pick_helper.behavior_class == "deflect"
+        )
 
         manager = self.task.env.object_managers[self.task.env.current_batch_index]
         task_config = self.config.task_config
@@ -2777,7 +4193,24 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 )
             )
         outside_staging_pose = carry_pose.copy()
-        outside_staging_pose[0, 3] = self.OUTSIDE_STAGING_X_M
+        environment_version = str(
+            (getattr(self.task, "scene_params", {}) or {}).get(
+                "pact_place_environment_version", ""
+            )
+        )
+        outside_staging_pose[0, 3] = (
+            self.V93_OUTSIDE_STAGING_X_M
+            if environment_version
+            in {
+                "pact_place_corridor_v9_3",
+                "pact_place_corridor_v9_4_mounted_preview",
+                "pact_place_corridor_v9_5_low_wall",
+                "pact_place_corridor_v9_8_pendant",
+            }
+            else self.V9_OUTSIDE_STAGING_X_M
+            if self._v9_enabled()
+            else self.OUTSIDE_STAGING_X_M
+        )
         outside_staging_pose[1, 3] = preplace_pose[1, 3]
         if not self.check_feasible_ik(outside_staging_pose):
             raise ValueError("IK failed for outside staging pose")
@@ -2809,12 +4242,128 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "place": place_pose,
             "postplace": postplace_pose,
         }
-        outbound_segments, self.outbound_deflected = self._bow_segment(
+        outbound_segments, panel_bowed = self._bow_segment(
             corridor_transfer,
             prefix="outbound",
             envelope_half_y=self.OUTBOUND_ENVELOPE_HALF_Y,
             safe_gap=self.OUTBOUND_SAFE_GAP,
         )
+        vessel_bowed = False
+        if self._v9_enabled():
+            outbound_hazard = next(
+                (
+                    item
+                    for item in self._hazard_list()
+                    if item.get("role") == "outbound_vessel"
+                ),
+                None,
+            )
+            if outbound_hazard is not None:
+                vessel_segments: list[TCPMoveSegment] = []
+                for candidate_segment in outbound_segments:
+                    pieces, bowed = self._bow_segment(
+                        candidate_segment,
+                        prefix="outbound_vessel",
+                        envelope_half_y=self.OUTBOUND_ENVELOPE_HALF_Y,
+                        safe_gap=self.V9_VESSEL_SAFE_GAP,
+                        center=np.asarray(outbound_hazard["center"], dtype=float),
+                        half=np.asarray(outbound_hazard["half"], dtype=float),
+                        preferred_waypoint_side=self._preferred_v9_waypoint_side(),
+                    )
+                    vessel_segments.extend(pieces)
+                    vessel_bowed |= bowed
+                outbound_segments = vessel_segments
+            if str(
+                (getattr(self.task, "scene_params", {}) or {}).get(
+                    "pact_place_environment_version", ""
+                )
+            ) in {
+                "pact_place_corridor_v9_3",
+                "pact_place_corridor_v9_4_mounted_preview",
+                "pact_place_corridor_v9_5_low_wall",
+                "pact_place_corridor_v9_8_pendant",
+            }:
+                inbound_hazard = next(
+                    (
+                        item
+                        for item in self._hazard_list()
+                        if item.get("role") == "inbound_vessel"
+                    ),
+                    None,
+                )
+                if inbound_hazard is not None:
+                    cross_vessel_segments: list[TCPMoveSegment] = []
+                    for candidate_segment in outbound_segments:
+                        pieces, bowed = self._bow_segment(
+                            candidate_segment,
+                            prefix="outbound_cross_vessel",
+                            envelope_half_y=self.OUTBOUND_ENVELOPE_HALF_Y,
+                            safe_gap=self.V9_VESSEL_SAFE_GAP,
+                            center=np.asarray(inbound_hazard["center"], dtype=float),
+                            half=np.asarray(inbound_hazard["half"], dtype=float),
+                            preferred_waypoint_side=self._preferred_v9_waypoint_side(),
+                        )
+                        cross_vessel_segments.extend(pieces)
+                        vessel_bowed |= bowed
+                    outbound_segments = cross_vessel_segments
+            # V9.8 is intentionally absent here. ``_bow_segment`` is a purely
+            # lateral (y) detour and the V9.8 pendant is a ceiling obstacle
+            # centred on y = 0, so a lateral bow around it computes a spurious
+            # 0.29-0.38 m detour that drives the arm into the bench clutter.
+            # Vertical clearance is the correct response; the 3-D ``_surf_dist``
+            # speed law still sees the pendant.
+            if environment_version in {
+                "pact_place_corridor_v9_4_mounted_preview",
+                "pact_place_corridor_v9_5_low_wall",
+            }:
+                fixture_roles = (
+                    ("wall_fixture", "ceiling_fixture")
+                    if environment_version == "pact_place_corridor_v9_4_mounted_preview"
+                    else ("wall_fixture",)
+                )
+                for fixture_role in fixture_roles:
+                    fixture = next(
+                        (
+                            item
+                            for item in self._hazard_list()
+                            if item.get("role") == fixture_role
+                        ),
+                        None,
+                    )
+                    if fixture is None:
+                        continue
+                    fixture_segments: list[TCPMoveSegment] = []
+                    fixture_bowed = False
+                    prefix = f"outbound_{fixture_role}"
+                    for candidate_segment in outbound_segments:
+                        if environment_version == "pact_place_corridor_v9_5_low_wall":
+                            pieces, bowed = self._v95_link_aware_fixture_segment(
+                                candidate_segment, fixture, prefix=prefix
+                            )
+                        else:
+                            route_side = self._route_side_at_x(
+                                candidate_segment, float(fixture["center"][0])
+                            )
+                            pieces, bowed = self._bow_segment(
+                                candidate_segment,
+                                prefix=prefix,
+                                envelope_half_y=self.MOUNTED_FIXTURE_ENVELOPE_HALF_Y,
+                                safe_gap=self.MOUNTED_FIXTURE_SAFE_GAP,
+                                center=np.asarray(fixture["center"], dtype=float),
+                                half=np.asarray(fixture["half"], dtype=float),
+                                preferred_waypoint_side=(
+                                    route_side
+                                    if fixture_role == "ceiling_fixture"
+                                    else None
+                                ),
+                            )
+                        fixture_segments.extend(pieces)
+                        fixture_bowed |= bowed
+                    outbound_segments = fixture_segments
+                    vessel_bowed |= fixture_bowed
+            self.outbound_deflected = bool(panel_bowed or vessel_bowed)
+        else:
+            self.outbound_deflected = panel_bowed
         if outbound_segments:
             outbound_segments = [
                 *self._subdivide_tcp_segment(
@@ -2900,12 +4449,32 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "inbound_approach",
             "inbound_pass",
             "inbound_exit",
+            "inbound_vessel_approach",
+            "inbound_vessel_pass",
+            "inbound_vessel_exit",
+            "inbound_wall_fixture_approach",
+            "inbound_wall_fixture_pass",
+            "inbound_wall_fixture_exit",
+            "inbound_ceiling_fixture_approach",
+            "inbound_ceiling_fixture_pass",
+            "inbound_ceiling_fixture_exit",
+            "deflect",
+            "pass_protrusion",
             "inbound_grasp",
             "grasp_settle",
             "outbound_lift",
             "outbound_approach",
             "outbound_pass",
             "outbound_exit",
+            "outbound_vessel_approach",
+            "outbound_vessel_pass",
+            "outbound_vessel_exit",
+            "outbound_wall_fixture_approach",
+            "outbound_wall_fixture_pass",
+            "outbound_wall_fixture_exit",
+            "outbound_ceiling_fixture_approach",
+            "outbound_ceiling_fixture_pass",
+            "outbound_ceiling_fixture_exit",
             "placement_descent",
         )
         next_id = max(phases.values()) + 1
@@ -2941,6 +4510,11 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         self.inbound_deflected = False
         self.outbound_deflected = False
         self._pact_place_bow_diagnostics = self._empty_bow_diagnostics()
+        self._sensor_cam_ids = None
+        self._pact_detected_hazard_names = set()
+        self._pact_detected_hazards = []
+        self._pact_maneuver_interactions = []
+        self._pact_active_maneuver = None
         result = super().reset(reset_retries)
         self.target_poses.update(self._pact_place_canonical_target_poses)
         return result
@@ -3145,6 +4719,11 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         }
 
     def get_action(self, observation):
+        if self._v9_enabled():
+            allowed = {"inbound_vessel", "panel", "outbound_vessel"}
+            detected = self._protrusion_detected(allowed)
+            if detected is not None and self._phase_for_hazard(detected):
+                self._handle_detected_hazard(detected)
         policy_phase = self.get_phase()
         self._pact_place_contact_audit.set_phase(
             self._traversal_phase(policy_phase), policy_phase
@@ -3220,6 +4799,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 "place_metrics": place_metrics,
                 "inbound_deflected": bool(self.inbound_deflected),
                 "outbound_deflected": bool(self.outbound_deflected),
+                "detected_hazards": list(self._pact_detected_hazards),
+                "maneuver_interactions": list(self._pact_maneuver_interactions),
+                "active_maneuver": self._active_maneuver_for_phase(),
                 "behavior_class": self.behavior_class,
                 "grasp_diagnostics": self._pact_place_grasp_diagnostics,
                 "bow_diagnostics": self._pact_place_bow_diagnostics,
