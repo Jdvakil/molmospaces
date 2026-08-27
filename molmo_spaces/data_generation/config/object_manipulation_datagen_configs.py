@@ -1867,6 +1867,9 @@ from molmo_spaces.tasks.enclosure_reach import (
     ObstacleFumehoodPickCheckSampler,
     InvisibleObstacleFumehoodPickSampler,
     InvisibleObstacleFumehoodPickCheckSampler,
+    GateObstacleFumehoodPickSampler,
+    GateObstacleFumehoodPickCheckSampler,
+    GateObstacleFumehoodPickVisibleCheckSampler,
     ObstacleAwarePickPlannerPolicyConfig,
     CubbyExpertPolicyConfig,
     CubbyOverreachSampler,
@@ -2325,6 +2328,110 @@ class FrankaSkinHybridInvisObstacleConfig(FrankaSkinHybridInvisObstacleCheckConf
     @property
     def tag(self) -> str:
         return "franka_skin_hybrid_invis_obstacle_v1"
+
+
+# --------------------------------------------------------------------------------------- #
+# GATE-BAR collection (v3.1, 2026-08-24). v3.0 (signed BAR_FACE_Y sweep of the XML-height
+# pegs) failed preflight: 1-7 cm bows around a 20 cm peg that often missed the gripper
+# line. v3.1 snaps a 44 cm pole onto the live TCP line; bow sign is the wall coin-flip.
+# Collect never renders the pole (INVIS_P=1). Geometry-debug preflight is the Visible
+# check (INVIS_P=0) so a human can see the pole in the doorway before the 200-ep run.
+# --------------------------------------------------------------------------------------- #
+@register_config("FrankaSkinHybridGateBarVisibleCheckConfig")
+class FrankaSkinHybridGateBarVisibleCheckConfig(FrankaSkinHybridInvisObstacleCheckConfig):
+    """Geometry debug: house 1 x 4, pole FORCED present and RENDERED. You must SEE the
+    pole in the exo video, in the doorway, and a ~18 cm lateral veer. Log must show
+    '[ObstaclePick] GATE SNAP' then 'DEFLECT' bow ~18 cm, both signs across 4 eps.
+    Do not convert / train this run."""
+
+    policy_config: BasePolicyConfig = ObstacleAwarePickPlannerPolicyConfig()
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=GateObstacleFumehoodPickVisibleCheckSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 4,
+        house_inds=[1],
+        samples_per_house=4,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=False,
+        randomize_lighting=False,
+    )
+    num_workers: int = 1
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_gate_bar_visible_check"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_gate_bar_visible_check"
+
+
+@register_config("FrankaSkinHybridGateBarCheckConfig")
+class FrankaSkinHybridGateBarCheckConfig(FrankaSkinHybridInvisObstacleCheckConfig):
+    """Invisible preflight: same geometry as the Visible check, pole hidden from RGB.
+    Run AFTER the visible check passes. Verify: NO pole in exo/wrist MP4, still
+    '[ObstaclePick] GATE SNAP' + 'DEFLECT' ~18 cm both signs, '[InvisBar] geom group 4'."""
+
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=GateObstacleFumehoodPickCheckSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 4,
+        house_inds=[1],
+        samples_per_house=4,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=False,
+        randomize_lighting=False,
+    )
+    num_workers: int = 1
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_gate_bar_check"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_gate_bar_check"
+
+
+@register_config("FrankaSkinHybridGateBarConfig")
+class FrankaSkinHybridGateBarConfig(FrankaSkinHybridGateBarCheckConfig):
+    """The gate-bar ACT collection: 8 wrap-around house indices (all = 1 mod 24 -> the
+    SAME red cup task) x 25 samples = 200 episodes on 4 workers. 75% of episodes carry
+    the pole, every pole is hidden from RGB. viz_sensor_rgb is forced OFF (the cosmetic
+    40x256x256 skin renders added ~3 GB/episode and OOM-killed 3 of 4 workers on the v2
+    run; they add nothing to the h5)."""
+
+    viz_sensor_rgb: bool = False
+    task_sampler_config: PickTaskSamplerConfig = PickTaskSamplerConfig(
+        task_sampler_class=GateObstacleFumehoodPickSampler,
+        scene_xml_paths=[str(_CUSTOM_SCENES / "fumehood.xml")] * 170,
+        house_inds=[1, 25, 49, 73, 97, 121, 145, 169],
+        samples_per_house=25,
+        added_pickup_objects=None,
+        num_added_pickups=0,
+        check_robot_placement_visibility=False,
+        max_total_attempts_multiplier=10,
+        max_allowed_sequential_task_sampler_failures=300,
+        max_allowed_sequential_rollout_failures=300,
+        max_allowed_sequential_irrecoverable_failures=10000,
+        robot_object_z_offset_random_min=-np.random.uniform(0.0, 1.0),
+        robot_object_z_offset_random_max=np.random.uniform(0.0, 1.0),
+        robot_placement_rotation_range_rad=0.52,
+        randomize_textures=True,
+        randomize_lighting=False,
+    )
+    num_workers: int = 4
+    output_dir: Path = ASSETS_DIR / "datagen" / "hybrid_gate_bar_v1"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_hybrid_gate_bar_v1"
 
 
 # --------------------------------------------------------------------------------------- #

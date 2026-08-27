@@ -194,6 +194,10 @@ class PickTask(BaseMujocoTask):
     def _reset_obstacle_diag_if_new_episode(self) -> None:
         if self.episode_step_count == 0 or not hasattr(self, "_obstacle_diag"):
             self._obstacle_diag: dict[int, int] = {}
+            # Per-step obstacle BODY NAMES (same steps as _obstacle_diag). Lets consumers
+            # split "rammed the hazard bar" from "brushed the cavity wall" — the counter
+            # alone cannot (STATUS.md §7 item 1).
+            self._obstacle_diag_bodies: dict[int, list[str]] = {}
             self._obstacle_diag_logged = False
             # Sticky flag: flips True the first step the arm penetrates any obstacle body.
             # Read by is_terminal() + get_info() for the opt-in strict-safety criterion.
@@ -204,6 +208,7 @@ class PickTask(BaseMujocoTask):
             robot_root = self.env.current_robot.robot_view.base.root_body_id
             model = data.model
             others = set()
+            names: set[str] = set()
             for c in data.contact:
                 if c.dist > 0:  # only actual penetrating contacts
                     continue
@@ -214,15 +219,25 @@ class PickTask(BaseMujocoTask):
                 if is_r1 == is_r2:  # robot self-collision or env<->env
                     continue
                 other = int(r2 if is_r1 else r1)
+                other_geom = int(c.geom2 if is_r1 else c.geom1)
                 if other == pickup_obj.body_id:  # the cup we are grasping
                     continue
-                if "floor" in model.body(other).name.lower():
+                body_name = model.body(other).name
+                if "floor" in body_name.lower():
                     continue
                 # Count DISTINCT obstacle bodies (cavity wall / shelf / hazard bar /
                 # fumehood), not raw geom-pairs, so `peak` reads as "# obstacle bodies
                 # the arm is wedged against this step".
                 others.add(other)
+                # Name what was touched. Static scene geoms hang off the world body, so
+                # name those by GEOM instead ("world" alone cannot separate the bench
+                # from the hood shell).
+                if body_name in ("", "world"):
+                    body_name = model.geom(other_geom).name or "world"
+                names.add(body_name)
             self._obstacle_diag[self.episode_step_count] = len(others)
+            if names:
+                self._obstacle_diag_bodies[self.episode_step_count] = sorted(names)
             if len(others) > 0:
                 self._obstacle_collision_occurred = True
         except Exception as e:  # pragma: no cover - metric must never break a rollout
@@ -243,9 +258,17 @@ class PickTask(BaseMujocoTask):
         peak = max(counts.values()) if counts else 0
         first = next((s for s in sorted(counts) if counts[s] > 0), None)
         self._obstacle_diag_logged = True
+        by_body: dict[str, int] = {}
+        for step_names in getattr(self, "_obstacle_diag_bodies", {}).values():
+            for n in step_names:
+                by_body[n] = by_body.get(n, 0) + 1
+        body_str = (
+            " bodies=" + ",".join(f"{n}:{c}" for n, c in sorted(by_body.items()))
+            if by_body else ""
+        )
         log.info(
-            "[ObstacleDiag] success=%s obstacle_contact_steps=%d/%d peak=%d first_contact_step=%s",
-            success, contact_steps, T, peak, str(first),
+            "[ObstacleDiag] success=%s obstacle_contact_steps=%d/%d peak=%d first_contact_step=%s%s",
+            success, contact_steps, T, peak, str(first), body_str,
         )
 
     def get_obs_scene(self):

@@ -1241,6 +1241,110 @@ class InvisibleObstacleFumehoodPickCheckSampler(InvisibleObstacleFumehoodPickSam
     INVIS_P = 1.0
 
 
+class GateObstacleFumehoodPickSampler(InvisibleObstacleFumehoodPickSampler):
+    """Gate-bar collection (v3.1, 2026-08-24): a TALL pole is snapped onto the actual
+    home→pregrasp TCP line, then hidden from RGB. The expert must bow ~18 cm; bow *sign*
+    is a left/right wall coin-flip that cameras cannot read off the cup.
+
+    v3.0 (signed BAR_FACE_Y sweep, XML-height pegs) failed the 2026-08-24 preflight:
+    the XML poles are 20–24 cm tall × 3.5 cm thick, the TCP line often missed them,
+    and the expert only added SAFE_GAP − already-clear (1–7 cm). Videos looked like a
+    normal pick. Vanilla going straight would not even hit.
+
+    v3.1:
+
+      * ``GATE_HALF_Z = 0.22`` (44 cm tall, top at 1.16 m) so the arm cannot fly over.
+      * ``gate_block``: at plan time the pole's inner face is placed on the TCP at
+        fraction ``GATE_APPROACH_T`` of home→pregrasp. Straight gripper envelope
+        intersects the geom on every bar episode.
+      * Wall coin-flip still chooses which side the pole *body* occupies, so bow
+        direction is independent of cup y. Cameras see the cup (and therefore WHERE
+        the line is) but not WHICH WAY is open. Mixed left/right demos average to
+        "go straight" unless the policy reads the skin.
+      * ``_obj_rest`` still draws cup y independently of every bar field.
+      * Collect ``INVIS_P = 1.0``. Geometry-debug preflight uses the VisibleCheck
+        sampler (``INVIS_P = 0``) so a human can see the pole in the doorway.
+
+    Eval cells: ``eval_act_obstacle.py --eval_sampler gate --eval_cell {invisible,free,visible}``."""
+
+    OBSTACLE_P = 0.75
+    INVIS_P = 1.0
+    XML_HALF_Z = {"protr_s": 0.10, "protr_m": 0.11, "protr_l": 0.12}
+    GATE_HALF_Z = 0.22          # full height 44 cm; top = SHELF_TOP_Z + 0.44 = 1.16 m
+    GATE_APPROACH_T = 0.40      # fraction along home→pregrasp where the pole sits
+    OBJ_Y_ABS = (0.08, 0.14)
+    AP_W_RANGE = (0.66, 0.85)
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["ap_w"] = float(np.random.uniform(*self.AP_W_RANGE))
+        th["gate_block"] = True
+        th["gate_approach_t"] = float(self.GATE_APPROACH_T)
+        # Initial station is a placeholder; ObstacleAwarePickPlannerPolicy snaps the
+        # pole onto the live TCP line. Keep a legal protr_pos_frac so _apply_theta
+        # can park a geom before the snap.
+        th["protr_pos_frac"] = float((-0.08) / max(th["depth"], 1e-6))
+        if th["protrusion_present"]:
+            th["intrusion"] = float(th["ap_w"] / 2 - 0.0)  # roughly center until snap
+            th["residual_margin"] = float(th["clearance"] - th["intrusion"])
+        return th
+
+    @staticmethod
+    def _set_protr_size(m, name: str, half_z: float) -> None:
+        gid = m.geom(f"{name}_g").id
+        s = PROTR[name]
+        size = np.array([s, s, half_z], dtype=float)
+        m.geom_size[gid] = size
+        # geom_rbound is compile-time; a taller pole with the old bound misses contacts.
+        m.geom_rbound[gid] = float(np.linalg.norm(size))
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        m, d = env.current_model, env.current_data
+        # Model persists across episodes: always restore XML sizes first.
+        for name, hz in self.XML_HALF_Z.items():
+            self._set_protr_size(m, name, hz)
+        if not th.get("protrusion_present"):
+            mujoco.mj_forward(m, d)
+            return
+        name = th["protr_name"]
+        self._set_protr_size(m, name, self.GATE_HALF_Z)
+        pos = list(th["protr_center"])
+        pos[2] = SHELF_TOP_Z + self.GATE_HALF_Z
+        self._mocap_set(env, name, pos)
+        th["protr_center"] = pos
+        th["protr_half"] = [PROTR[name], PROTR[name], self.GATE_HALF_Z]
+        boxes = th.get("obstacle_aabbs") or []
+        if boxes:
+            boxes[-1] = [list(map(float, pos)), list(th["protr_half"])]
+            th["obstacle_aabbs"] = boxes
+        mujoco.mj_forward(m, d)
+
+    def _obj_rest(self):
+        # Cup y independent of every bar field. Pole y is later snapped onto the
+        # TCP line, so corr(pole y, cup y) will be high; bow *sign* stays a coin flip.
+        x, _, z = BigFumehoodPickSampler._obj_rest(self)
+        y = float(np.random.choice([-1.0, 1.0]) * np.random.uniform(*self.OBJ_Y_ABS))
+        return (x, y, z)
+
+
+class GateObstacleFumehoodPickCheckSampler(GateObstacleFumehoodPickSampler):
+    """Invisible preflight / eval-cell variant: pole on EVERY episode, hidden from RGB.
+    eval_act_obstacle.py --eval_sampler gate pins OBSTACLE_P / INVIS_P per cell."""
+
+    OBSTACLE_P = 1.0
+    INVIS_P = 1.0
+
+
+class GateObstacleFumehoodPickVisibleCheckSampler(GateObstacleFumehoodPickSampler):
+    """Geometry-debug preflight: pole on EVERY episode, RENDERED to RGB. Watch the
+    exo video — the pole must sit in the doorway and the arm must veer around it.
+    Collect still uses INVIS_P=1. Do not train on this sampler's outputs."""
+
+    OBSTACLE_P = 1.0
+    INVIS_P = 0.0
+
+
 from molmo_spaces.policy.solvers.object_manipulation.pick_planner_policy import (  # noqa: E402
     PickPlannerPolicy,
 )
@@ -1252,7 +1356,12 @@ class ObstacleAwarePickPlannerPolicy(PickPlannerPolicy):
     envelope + a safety gap, the approach is rebuilt with two waypoints bracketing
     the bar, bowed away from it laterally, at a cautious passing speed. Episodes
     without a bar (or with a naturally-clearing line) keep the parent's exact plan,
-    so this is a strict superset of the proven pick behavior."""
+    so this is a strict superset of the proven pick behavior.
+
+    Gate-bar episodes (``scene_params['gate_block']``) first snap the pole onto the
+    live TCP line so the gripper envelope actually intersects it; bow *sign* follows
+    ``protr_wall``, not the sign of the snapped center (a right-wall pole on a
+    +y cup line still has center[1] > 0)."""
 
     GRIP_HALF = 0.10     # open-gripper lateral half-extent around the TCP line
     SAFE_GAP = 0.08      # surface clearance the deflection enforces beyond GRIP_HALF
@@ -1269,24 +1378,57 @@ class ObstacleAwarePickPlannerPolicy(PickPlannerPolicy):
         T[:3, 3] = p
         return T
 
+    def _repose_gate_pole(self, th: dict, p0: np.ndarray, p1: np.ndarray) -> bool:
+        """Put the pole's inner face on the TCP at GATE_APPROACH_T. Returns False
+        if the approach has no +x run (should not happen on this task)."""
+        if abs(p1[0] - p0[0]) < 1e-6:
+            return False
+        t = float(th.get("gate_approach_t", 0.40))
+        cross = p0 + t * (p1 - p0)
+        h = np.asarray(th["protr_half"], dtype=float)
+        side = 1.0 if th.get("protr_wall") == "left" else -1.0
+        new_c = np.asarray(th["protr_center"], dtype=float).copy()
+        new_c[0] = float(cross[0])
+        new_c[1] = float(cross[1] + side * h[1])
+        env = self.task.env
+        m, d = env.current_model, env.current_data
+        mid = int(m.body_mocapid[m.body(th["protr_name"]).id])
+        d.mocap_pos[mid] = new_c
+        mujoco.mj_forward(m, d)
+        th["protr_center"] = new_c.tolist()
+        th["gate_tcp_y"] = float(cross[1])
+        boxes = th.get("obstacle_aabbs") or []
+        if boxes:
+            boxes[-1] = [list(map(float, new_c)), list(map(float, h))]
+            th["obstacle_aabbs"] = boxes
+        log.info(f"[ObstaclePick] GATE SNAP: pole xy=({new_c[0]:+.3f},{new_c[1]:+.3f}) "
+                 f"inner-face on TCP y={cross[1]:+.3f} (wall={th.get('protr_wall')}, t={t:.2f})")
+        return True
+
     def _compute_trajectory(self) -> list[ActionPrimitive]:
         prims = super()._compute_trajectory()
         th = getattr(self.task, "scene_params", {}) or {}
         if not th.get("protrusion_present") or "protr_center" not in th:
             return prims
-        c = np.asarray(th["protr_center"], dtype=float)
-        h = np.asarray(th["protr_half"], dtype=float)
         approach = prims[1]
         seg_pre, seg_grasp = approach._move_segments[0], approach._move_segments[1]
         p0 = seg_pre.start_pose[:3, 3].copy()
         p1 = seg_pre.end_pose[:3, 3].copy()
         if abs(p1[0] - p0[0]) < 1e-6:
             return prims
+        if th.get("gate_block"):
+            if not self._repose_gate_pole(th, p0, p1):
+                return prims
+        c = np.asarray(th["protr_center"], dtype=float)
+        h = np.asarray(th["protr_half"], dtype=float)
         t_bar = (c[0] - p0[0]) / (p1[0] - p0[0])
         if not (0.02 < t_bar < 0.98):
             return prims                       # approach never crosses the bar's x-station
         cross = p0 + t_bar * (p1 - p0)
-        side = 1.0 if c[1] >= 0.0 else -1.0
+        if th.get("gate_block"):
+            side = 1.0 if th.get("protr_wall") == "left" else -1.0
+        else:
+            side = 1.0 if c[1] >= 0.0 else -1.0
         face_y = c[1] - side * h[1]            # inner (corridor-side) face of the bar
         clear = side * (face_y - cross[1]) - self.GRIP_HALF
         need = self.SAFE_GAP - clear
