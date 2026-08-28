@@ -1,0 +1,28 @@
+<mujoco model="pact_place_corridor_v10_4">
+  <!-- The frozen V3 shell is included verbatim and never edited. V10.4 adds
+       one symmetric two-lobe pendant compiled at its final poses and sizes.
+       The body has no joint, freejoint, or mocap flag, so nothing moves or
+       resizes it at runtime and its broad-phase bounds cannot go stale.
+       Visible geometry IS the collision geometry; the hood class supplies
+       contype=8 conaffinity=15 and a matte neutral material. -->
+  <include file="pact_place_corridor_v3.xml"/>
+  <worldbody>
+    <body name="pact_clutter_mount_v104" pos="0 0 0">
+      <geom name="pact_clutter_mount_v104_lobe_0_g" class="hood" type="box"
+            pos="0.78 -0.34 1.01" size="0.01 0.01 0.03"
+            rgba="0.55 0.56 0.58 1"/>
+      <geom name="pact_clutter_mount_v104_lobe_1_g" class="hood" type="box"
+            pos="0.78 0.34 1.01" size="0.01 0.01 0.03"
+            rgba="0.55 0.56 0.58 1"/>
+      <geom name="pact_clutter_mount_v104_stem_0_g" class="hood" type="box"
+            pos="0.78 -0.35 1.2725" size="0.006 0.006 0.2325"
+            rgba="0.55 0.56 0.58 1"/>
+      <geom name="pact_clutter_mount_v104_stem_1_g" class="hood" type="box"
+            pos="0.78 0.35 1.2725" size="0.006 0.006 0.2325"
+            rgba="0.55 0.56 0.58 1"/>
+      <geom name="pact_clutter_mount_v104_crossbar_g" class="hood" type="box"
+            pos="0.78 0 1.51" size="0.006 0.356 0.005"
+            rgba="0.55 0.56 0.58 1"/>
+    </body>
+  </worldbody>
+</mujoco>

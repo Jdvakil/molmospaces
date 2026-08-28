@@ -1725,6 +1725,31 @@ class PactPlaceCorridorV3Sampler(PactPlaceCorridorV2Sampler):
         mujoco.mj_forward(env.current_model, env.current_data)
 
 
+PACT_PLACE_V104_ENVIRONMENT_VERSION = (
+    "pact_place_corridor_v10_4_first_shot_static_pendant"
+)
+
+
+class PactPlaceCorridorV104Sampler(PactPlaceCorridorV3Sampler):
+    """V6c sampling, verbatim, plus the V10.4 environment marker.
+
+    A thin pass-through. It changes no clutter slot, jitter, panel behaviour,
+    target/tray geometry, camera, or contact semantics; the compiled-static
+    pendant lives in the scene XML, not in sampling. The marker exists so the
+    single registered speed amendment and the V10.4 telemetry can be gated on
+    it, and so no historical environment can reach either.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V104_ENVIRONMENT_VERSION
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v104_static_pendant"] = True
+        th["pact_v104_pendant_body"] = "pact_clutter_mount_v104"
+        return th
+
+
 class PactPlaceCorridorV4Sampler(PactPlaceCorridorV3Sampler):
     """v3 corridor and tray; 16-body clutter pool with a 13-slot lattice.
 
@@ -3029,6 +3054,10 @@ class PactPlaceCorridorV98PendantSampler(PactPlaceCorridorV93Sampler):
         th["pact_v98_pendant_fixture"] = {} if parked else self._pendant_fixture()
         th["pact_v98_mounted_clutter_is_kinematic"] = True
         th["pact_v98_lateral_lane_cost_m"] = 0.0
+        row = self._pact_manifest_row or {}
+        th["pact_v98_pendant_lateral_bow"] = bool(
+            row.get("pact_v98_pendant_lateral_bow")
+        )
         return th
 
     def _apply_theta(self, env, th):
@@ -3062,6 +3091,338 @@ class PactPlaceCorridorV98PendantSampler(PactPlaceCorridorV93Sampler):
         th["pact_v98_active_mount_body"] = PENDANT_BODY
         th["pact_v98_lateral_lane_cost_m"] = 0.0
         mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV99PendantSampler(PactPlaceCorridorV93Sampler):
+    """Settled V9.5 clutter plus one fixed, side-independent ceiling pendant.
+
+    V9.9 does not inherit V9.8 lag, face-window, or ceiling-envelope
+    validation. The pendant is identical on both panel sides and is active on
+    empty inbound and loaded outbound traversal.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_9_pendant"
+    PENDANT_BODY = "pact_clutter_mount_ceiling"
+    PENDANT_GEOM = "pact_clutter_mount_ceiling_g"
+
+    def _pendant_fixture(self) -> dict[str, Any]:
+        from pact_place_v99_pendant_contract import validate_pendant_geometry
+
+        fixture = dict(
+            (self._pact_manifest_row or {}).get("pact_v99_pendant_fixture")
+            or (self._pact_manifest_row or {}).get("pact_mounted_ceiling_fixture")
+            or {}
+        )
+        if str(fixture.get("support") or "") != "ceiling":
+            raise ValueError("V9.9 requires one ceiling-mounted pendant fixture")
+        validate_pendant_geometry(fixture.get("center_m"), fixture.get("half_m"))
+        return fixture
+
+    def _pendant_parked(self) -> bool:
+        return bool((self._pact_manifest_row or {}).get("pact_v99_pendant_parked"))
+
+    def _route_params(self) -> dict[str, Any]:
+        row = self._pact_manifest_row or {}
+        return dict(row.get("pact_v99_route") or {})
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        parked = self._pendant_parked()
+        th["pact_v99_pendant_parked"] = parked
+        th["pact_v99_pendant_fixture"] = {} if parked else self._pendant_fixture()
+        th["pact_v99_route"] = {} if parked else self._route_params()
+        th["pact_v99_mounted_clutter_is_kinematic"] = True
+        th["pact_v98_pendant_lateral_bow"] = False
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        from pact_place_v99_pendant_contract import PENDANT_BODY, PENDANT_GEOM
+
+        self._mocap_set(env, PENDANT_BODY, [0.0, 0.0, -2.0])
+        if th.get("pact_v99_pendant_parked"):
+            th["pact_v99_active_mount_body"] = None
+            mujoco.mj_forward(env.current_model, env.current_data)
+            return
+        item = dict(th["pact_v99_pendant_fixture"])
+        center = np.asarray(item["center_m"], dtype=float)
+        half = np.asarray(item["half_m"], dtype=float)
+        geom = env.current_model.geom(PENDANT_GEOM)
+        env.current_model.geom_size[int(geom.id)] = half
+        self._mocap_set(env, PENDANT_BODY, center.tolist())
+        hazard = {
+            **item,
+            "name": "pact_mounted_ceiling_fixture",
+            "body": PENDANT_BODY,
+            "role": "ceiling_fixture",
+            "center": center.tolist(),
+            "half": half.tolist(),
+            "phase": "inbound_and_outbound",
+            "kinematic": True,
+            "lateral_lane_cost_m": 0.0,
+        }
+        th.setdefault("obstacle_aabbs", []).append([center.tolist(), half.tolist()])
+        th.setdefault("pact_v9_hazards", []).append(hazard)
+        th["pact_v99_active_mount_body"] = PENDANT_BODY
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+PACT_PLACE_V10_ENVIRONMENT_VERSION = "pact_place_corridor_v10_compound_pendant"
+PACT_PLACE_V102_ENVIRONMENT_VERSION = "pact_place_corridor_v10_2_raised_pendant"
+# Both V10 versions use the full-route lane primitive on the same compiled V10
+# scene. V10.2 additionally unlocks the registered route-piece speed schedule.
+PACT_PLACE_V105_ENVIRONMENT_VERSION = (
+    "pact_place_corridor_v10_5_v95_clutter_static_pendant"
+)
+
+
+class PactPlaceCorridorV105Sampler(PactPlaceCorridorV93Sampler):
+    """Settled fixture-free V9.5 clutter, verbatim, plus the V10.5 marker.
+
+    Sampling behaviour is V9.3's: the same palette, layout families, vessel
+    jitter, panel, target/tray, cameras, contact audit, and clutter-stability
+    semantics. Household objects stay collision-enabled movable free bodies.
+
+    The pendant is not sampled at all. It lives in the compiled scene XML that
+    the manifest row selects before model construction, so there is nothing to
+    pose, resize, or refresh at runtime. The marker exists so the one
+    registered speed cap and the V10.5 telemetry can be gated on it, and so no
+    historical environment can reach either.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V105_ENVIRONMENT_VERSION
+    PENDANT_BODY = "pact_clutter_mount_v105"
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        row = self._pact_manifest_row or {}
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v105_static_pendant"] = True
+        th["pact_v105_pendant_body"] = self.PENDANT_BODY
+        # Telemetry/expert only. These never reach a student observation.
+        th["pact_v105_pose_id"] = row.get("pose_id")
+        th["pact_v105_scene_sha256"] = row.get("pact_v105_scene_sha256")
+        th["pact_v105_assembly_sha256"] = row.get("pact_v105_assembly_sha256")
+        return th
+
+    def sample_task(self, *args, **kwargs):
+        """Refuse a scene/pose/hash mismatch before the task is created."""
+        row = self._pact_manifest_row or {}
+        expected = row.get("pact_v105_scene_sha256")
+        if expected:
+            import hashlib
+            from pathlib import Path
+
+            scene = getattr(
+                getattr(self.cfg, "task_sampler_config", None), "scene_xml", None
+            ) or getattr(self.cfg, "scene_xml", None)
+            if scene is None:
+                raise ValueError("V10.5 row binds a scene hash but no scene is set")
+            observed = hashlib.sha256(Path(str(scene)).read_bytes()).hexdigest()
+            if observed != expected:
+                raise ValueError(
+                    f"V10.5 scene hash mismatch for pose {row.get('pose_id')!r}: "
+                    f"{observed} != {expected}"
+                )
+        return super().sample_task(*args, **kwargs)
+
+
+PACT_PLACE_V106_ENVIRONMENT_VERSION = (
+    "pact_place_corridor_v10_6_v95_clutter_asymmetric_pendant"
+)
+
+
+class PactPlaceCorridorV106Sampler(PactPlaceCorridorV93Sampler):
+    """V10.5's sampler behaviour with the V10.6 asymmetric marker.
+
+    Identical to V10.5 in every sampled quantity -- settled fixture-free V9.5
+    palette, layout families, vessel jitter, panel, target/tray, cameras,
+    contact audit, clutter stability. The pendant is compiled into the scene
+    the manifest row selects, so nothing here poses or resizes it.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V106_ENVIRONMENT_VERSION
+    PENDANT_BODY = "pact_clutter_mount_v106"
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        row = self._pact_manifest_row or {}
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v106_static_pendant"] = True
+        th["pact_v106_pendant_body"] = self.PENDANT_BODY
+        # Telemetry/expert only; never reaches a student observation.
+        th["pact_v106_pose_id"] = row.get("pose_id")
+        th["pact_v106_scene_sha256"] = row.get("pact_v106_scene_sha256")
+        th["pact_v106_assembly_sha256"] = row.get("pact_v106_assembly_sha256")
+        # The policy has no manifest row of its own, so the assembly it needs
+        # for clearance telemetry has to travel through scene_params.
+        th["pact_v106_x_m"] = row.get("pact_v106_x_m")
+        th["pact_v106_r_neg_m"] = row.get("pact_v106_r_neg_m")
+        th["pact_v106_r_pos_m"] = row.get("pact_v106_r_pos_m")
+        return th
+
+    def sample_task(self, *args, **kwargs):
+        """Refuse a scene/pose/hash mismatch before the task is created."""
+        row = self._pact_manifest_row or {}
+        expected = row.get("pact_v106_scene_sha256")
+        if expected:
+            import hashlib
+            from pathlib import Path
+
+            # The datagen config carries scene_xml_paths, not scene_xml. Reading
+            # the wrong attribute made this guard refuse every task instead of
+            # verifying it.
+            experiment_config = getattr(self, "config", None)
+            sampler_config = getattr(experiment_config, "task_sampler_config", None)
+            paths = list(getattr(sampler_config, "scene_xml_paths", None) or [])
+            scene = paths[0] if paths else None
+            if scene is None:
+                raise ValueError("V10.6 row binds a scene hash but no scene is set")
+            if len(set(paths)) > 1:
+                raise ValueError(
+                    f"V10.6 expects one scene, got {sorted(set(paths))}"
+                )
+            observed = hashlib.sha256(Path(str(scene)).read_bytes()).hexdigest()
+            if observed != expected:
+                raise ValueError(
+                    f"V10.6 scene hash mismatch for pose {row.get('pose_id')!r}: "
+                    f"{observed} != {expected}"
+                )
+        return super().sample_task(*args, **kwargs)
+
+
+PACT_PLACE_V10_LANE_ENVIRONMENT_VERSIONS = (
+    PACT_PLACE_V10_ENVIRONMENT_VERSION,
+    PACT_PLACE_V102_ENVIRONMENT_VERSION,
+)
+
+
+class PactPlaceCorridorV10CompoundPendantSampler(PactPlaceCorridorV93Sampler):
+    """Settled V9.5 clutter plus one fixed connected compound ceiling pendant."""
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v10_compound_pendant"
+    PENDANT_BODY = "pact_clutter_mount_v10"
+
+    def _pendant_assembly(self) -> dict[str, Any]:
+        from pact_place_v10_geometry import build_assembly, build_lobe
+
+        payload = dict(
+            (self._pact_manifest_row or {}).get("pact_v10_pendant_assembly") or {}
+        )
+        if not payload:
+            raise ValueError("V10 requires pact_v10_pendant_assembly")
+        if payload.get("components"):
+            return payload
+        lobes = []
+        for item in payload.get("lobes") or []:
+            lobes.append(
+                build_lobe(
+                    center_x_m=item["center_m"][0],
+                    center_y_m=item["center_m"][1],
+                    center_z_m=item["center_m"][2],
+                    half_x_m=item["half_m"][0],
+                    half_y_m=item["half_m"][1],
+                    half_z_m=item["half_m"][2],
+                )
+            )
+        return build_assembly(lobes)
+
+    def _pendant_parked(self) -> bool:
+        return bool((self._pact_manifest_row or {}).get("pact_v10_pendant_parked"))
+
+    def _route_params(self) -> dict[str, Any]:
+        return dict((self._pact_manifest_row or {}).get("pact_v10_route") or {})
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        parked = self._pendant_parked()
+        th["pact_v10_pendant_parked"] = parked
+        th["pact_v10_pendant_assembly"] = {} if parked else self._pendant_assembly()
+        th["pact_v10_route"] = {} if parked else self._route_params()
+        th["pact_v99_pendant_parked"] = True
+        th["pact_v98_pendant_lateral_bow"] = False
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        from pact_place_v10_compound_pendant_contract import PENDANT_BODY
+        from pact_place_v10_geometry import active_components
+        from pact_place_v10_scene import pose_assembly_on_data
+
+        parked = bool(th.get("pact_v10_pendant_parked"))
+        assembly = None if parked else dict(th.get("pact_v10_pendant_assembly") or {})
+        pose_assembly_on_data(
+            env.current_model,
+            env.current_data,
+            assembly,
+            parked=parked,
+        )
+        if parked or not assembly:
+            th["pact_v10_active_mount_body"] = None
+            mujoco.mj_forward(env.current_model, env.current_data)
+            return
+        for item in active_components(assembly):
+            center = list(map(float, item["center_m"]))
+            half = list(map(float, item["half_m"]))
+            hazard = {
+                **item,
+                "name": f"pact_mounted_{item['name']}",
+                "body": PENDANT_BODY,
+                "role": "ceiling_fixture",
+                "center": center,
+                "half": half,
+                "phase": "inbound_and_outbound",
+                "kinematic": True,
+                "lateral_lane_cost_m": 0.0,
+            }
+            th.setdefault("obstacle_aabbs", []).append([center, half])
+            th.setdefault("pact_v9_hazards", []).append(hazard)
+        th["pact_v10_active_mount_body"] = PENDANT_BODY
+        mujoco.mj_forward(env.current_model, env.current_data)
+
+
+class PactPlaceCorridorV102RaisedPendantSampler(
+    PactPlaceCorridorV10CompoundPendantSampler
+):
+    """V10.2 raised, collision-legible pendant on the compiled V10 scene.
+
+    Same scene, same parked legacy mounts, same V9.5 clutter families. The only
+    differences are the registered raised assembly, the V10.2 environment
+    marker, and the route-piece speed schedule the marker unlocks.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V102_ENVIRONMENT_VERSION
+
+    def _pendant_assembly(self) -> dict[str, Any]:
+        payload = dict(
+            (self._pact_manifest_row or {}).get("pact_v10_pendant_assembly") or {}
+        )
+        if not payload or not payload.get("components"):
+            raise ValueError(
+                "V10.2 requires an explicit pact_v10_pendant_assembly with components"
+            )
+        from pact_place_v102_geometry import PROBE_LABEL_V102
+
+        if str(payload.get("probe_label") or "") != PROBE_LABEL_V102:
+            raise ValueError(
+                "V10.2 refuses an assembly that is not the registered raised probe"
+            )
+        return payload
+
+    def _route_params(self) -> dict[str, Any]:
+        from pact_place_v102_route import route_is_v102
+
+        route = dict((self._pact_manifest_row or {}).get("pact_v10_route") or {})
+        scene_marker = {
+            "pact_place_environment_version": self.PACT_PLACE_ENVIRONMENT_VERSION
+        }
+        if not route_is_v102(scene_marker, route):
+            raise ValueError(
+                "V10.2 requires the exact registered route markers and speed-schedule hash"
+            )
+        return route
 
 
 class PactPlaceTCPMoveSequence(TCPMoveSequence):
@@ -3181,6 +3542,10 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
     # deliberately smaller than the loaded-vessel envelope so the preview
     # remains feasible while still producing a geometry-dependent detour.
     MOUNTED_FIXTURE_ENVELOPE_HALF_Y = 0.10
+    # V9.8 ceiling pendant only. Measured wrist lag toward the centreline
+    # (0.208 m on −y bows, 0.108 m on +y) plus 4 mm. Wall fixtures keep 0.10.
+    CEILING_FIXTURE_ENVELOPE_HALF_Y_NEG = 0.212
+    CEILING_FIXTURE_ENVELOPE_HALF_Y_POS = 0.112
     MOUNTED_FIXTURE_SAFE_GAP = 0.025
     V95_MIN_FIXTURE_BOW_M = 0.040
     V95_MIN_PLANNED_LINK_CLEARANCE_M = 0.020
@@ -3207,6 +3572,41 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         self.inbound_deflected = False
         self.outbound_deflected = False
         self._pact_place_bow_diagnostics = self._empty_bow_diagnostics()
+        self._pact_place_v99_route = {
+            "inbound_pendant": self._v99_empty_route_record(),
+            "outbound_pendant": self._v99_empty_route_record(),
+        }
+        self._pact_place_v10_route = {
+            "inbound_pendant": self._v99_empty_route_record(),
+            "outbound_pendant": self._v99_empty_route_record(),
+        }
+        self._pact_place_v102_frames: list[dict[str, Any]] = []
+        self._pact_place_v104_frames: list[dict[str, Any]] = []
+        self._pact_place_v104_speed_amendment: dict[str, Any] = {}
+        self._pact_place_v106_frames: list[dict[str, Any]] = []
+        self._pact_place_v106_speed_amendment: dict[str, Any] = {}
+        self._pact_v106_pendant_geom_ids: list[int] | None = None
+        self._pact_v106_probe_ids: list[int] | None = None
+        self._pact_v106_boxes = None
+        self._pact_v106_risk_boxes = None
+        self._pact_v106_shape_cache = None
+        self._pact_v106_assembly = None
+        self._pact_place_v105_frames: list[dict[str, Any]] = []
+        self._pact_place_v105_speed_amendment: dict[str, Any] = {}
+        self._pact_v105_pendant_geom_ids: list[int] | None = None
+        self._pact_v105_probe_ids: list[int] | None = None
+        self._pact_v105_boxes = None
+        self._pact_v105_risk_boxes = None
+        self._pact_v105_shape_cache = None
+        self._pact_v105_assembly = None
+        self._pact_v104_pendant_geom_ids: list[int] | None = None
+        self._pact_v104_probe_ids: list[int] | None = None
+        self._pact_v104_boxes = None
+        self._pact_v104_shape_cache = None
+        self._pact_place_last_tcp_m: np.ndarray | None = None
+        self._pact_place_last_sim_time_s: float | None = None
+        self._pact_v102_component_geoms: list[tuple[str, int]] | None = None
+        self._pact_v102_probe_ids: dict[bool, list[int]] = {}
         self._sensor_cam_ids: list[int] | None = None
         self._pact_detected_hazard_names: set[str] = set()
         self._pact_detected_hazards: list[dict[str, Any]] = []
@@ -3226,7 +3626,79 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "pact_place_corridor_v9_4_mounted_preview",
             "pact_place_corridor_v9_5_low_wall",
             "pact_place_corridor_v9_8_pendant",
+            "pact_place_corridor_v9_9_pendant",
+            PACT_PLACE_V10_ENVIRONMENT_VERSION,
+            PACT_PLACE_V102_ENVIRONMENT_VERSION,
+            PACT_PLACE_V105_ENVIRONMENT_VERSION,
+            PACT_PLACE_V106_ENVIRONMENT_VERSION,
         }
+
+    def _environment_version(self) -> str:
+        return str(
+            (getattr(self.task, "scene_params", {}) or {}).get(
+                "pact_place_environment_version", ""
+            )
+        )
+
+    def _v99_enabled(self) -> bool:
+        return self._environment_version() == "pact_place_corridor_v9_9_pendant"
+
+    def _v10_enabled(self) -> bool:
+        return self._environment_version() in PACT_PLACE_V10_LANE_ENVIRONMENT_VERSIONS
+
+    def _v104_enabled(self) -> bool:
+        return self._environment_version() == PACT_PLACE_V104_ENVIRONMENT_VERSION
+
+    def _v105_enabled(self) -> bool:
+        return self._environment_version() == PACT_PLACE_V105_ENVIRONMENT_VERSION
+
+    def _v106_enabled(self) -> bool:
+        return self._environment_version() == PACT_PLACE_V106_ENVIRONMENT_VERSION
+
+    def _v102_enabled(self) -> bool:
+        return self._environment_version() == PACT_PLACE_V102_ENVIRONMENT_VERSION
+
+    @classmethod
+    def _ceiling_fixture_envelope_half_y(cls, waypoint_side: float) -> float:
+        if float(waypoint_side) < 0.0:
+            return float(cls.CEILING_FIXTURE_ENVELOPE_HALF_Y_NEG)
+        return float(cls.CEILING_FIXTURE_ENVELOPE_HALF_Y_POS)
+
+    def _mounted_fixture_bow_envelope_half_y(
+        self, fixture_role: str, waypoint_side: float
+    ) -> float:
+        if (
+            fixture_role == "ceiling_fixture"
+            and self._environment_version() == "pact_place_corridor_v9_8_pendant"
+        ):
+            return self._ceiling_fixture_envelope_half_y(waypoint_side)
+        return float(self.MOUNTED_FIXTURE_ENVELOPE_HALF_Y)
+
+    @staticmethod
+    def _mounted_fixture_roles(
+        environment_version: str,
+        *,
+        pendant_lateral_bow: bool = False,
+    ) -> tuple[str, ...]:
+        """Return the mounted-fixture roles that receive a lateral bow.
+
+        V9.4/V9.5 wall fixtures are genuine lateral obstacles and always bow.
+        V9.8's ceiling pendant hangs above the TCP (bottom z=1.10 vs TCP
+        z≈0.885) so the default is no lateral bow. Set
+        ``pact_v98_pendant_lateral_bow`` on the row to opt into the
+        TCP-only sideways detour; that path is the measured phantom.
+        """
+        if environment_version == "pact_place_corridor_v9_4_mounted_preview":
+            return ("wall_fixture", "ceiling_fixture")
+        if environment_version == "pact_place_corridor_v9_5_low_wall":
+            return ("wall_fixture",)
+        if (
+            environment_version == "pact_place_corridor_v9_8_pendant"
+            and pendant_lateral_bow
+        ):
+            return ("ceiling_fixture",)
+        # V9.9 uses the full-route lane primitive, not the V9.8 ceiling bow.
+        return ()
 
     def _preferred_v9_waypoint_side(self) -> float | None:
         """Return +1/-1 for the single lane left open by the active panel."""
@@ -3552,6 +4024,8 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "straight_clearance_m": None,
             "required_clearance_m": None,
             "response_source": None,
+            "waypoint_y_m": None,
+            "waypoint_side": None,
         }
 
     @classmethod
@@ -3571,10 +4045,22 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         straight_clearance_m: float | None = None,
         required_clearance_m: float | None = None,
         response_source: str | None = None,
+        waypoint_y_m: float | None = None,
+        waypoint_side: float | None = None,
     ) -> None:
         previous = self._pact_place_bow_diagnostics.get(
             prefix, self._empty_bow_record()
         )
+        take_waypoint = float(planned_bow_m) + 1e-12 >= float(
+            previous.get("planned_bow_m", 0.0)
+        )
+        waypoint_y_out = previous.get("waypoint_y_m")
+        waypoint_side_out = previous.get("waypoint_side")
+        if take_waypoint and waypoint_y_m is not None:
+            waypoint_y_out = float(waypoint_y_m)
+            waypoint_side_out = (
+                None if waypoint_side is None else float(waypoint_side)
+            )
         self._pact_place_bow_diagnostics[prefix] = {
             # A compound hazard can be evaluated against several consecutive
             # segments.  Preserve the strongest admitted bow instead of letting
@@ -3599,6 +4085,8 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 else float(required_clearance_m)
             ),
             "response_source": response_source or previous.get("response_source"),
+            "waypoint_y_m": waypoint_y_out,
+            "waypoint_side": waypoint_side_out,
         }
 
     def _get_placement_poses(
@@ -3744,6 +4232,8 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             straight_clearance_m=straight_clearance,
             required_clearance_m=safe_gap,
             response_source="actual_episode_clearance_geometry",
+            waypoint_y_m=waypoint_y,
+            waypoint_side=waypoint_side,
         )
         log.info(
             f"[PactPlace] {prefix} DEFLECT: straight clearance "
@@ -3941,6 +4431,865 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             speed=segment.speed,
         )
 
+    def _v99_empty_route_record(self) -> dict[str, Any]:
+        return {
+            "lane_y_m": None,
+            "padding_m": None,
+            "entry_x_m": None,
+            "exit_x_m": None,
+            "min_abs_detour_m": 0.0,
+            "detour_meets_minimum": False,
+            "nominal_clearance_m": None,
+            "robust_clearance_m": None,
+            "ik_ok": False,
+            "ik_failures": 0,
+            "fallback_taken": False,
+            "clipped": False,
+            "wrong_way": False,
+            "parked": False,
+        }
+
+    def _v99_record_route(self, prefix: str, **fields: Any) -> None:
+        record = self._v99_empty_route_record()
+        record.update(fields)
+        self._pact_place_v99_route[prefix] = record
+
+    def _v99_collision_robot_geom_ids(self) -> list[int]:
+        model = self.task.env.current_model
+        ids: list[int] = []
+        for geom_id in range(int(model.ngeom)):
+            body = model.body(int(model.geom_bodyid[geom_id])).name or ""
+            if not str(body).startswith("robot_0/"):
+                continue
+            if int(model.geom_contype[geom_id]) == 0 and int(
+                model.geom_conaffinity[geom_id]
+            ) == 0:
+                continue
+            ids.append(int(geom_id))
+        return ids
+
+    def _v99_target_geom_ids(self) -> list[int]:
+        env = self.task.env
+        model = env.current_model
+        manager = env.object_managers[env.current_batch_index]
+        pickup = manager.get_object_by_name(self.config.task_config.pickup_obj_name)
+        if pickup is None:
+            return []
+        body_name = str(getattr(pickup, "name", "") or "")
+        ids: list[int] = []
+        for geom_id in range(int(model.ngeom)):
+            body = model.body(int(model.geom_bodyid[geom_id])).name or ""
+            if body_name and body_name not in str(body):
+                continue
+            if int(model.geom_contype[geom_id]) == 0 and int(
+                model.geom_conaffinity[geom_id]
+            ) == 0:
+                continue
+            if "Cup" not in str(body) and body_name not in str(body):
+                continue
+            ids.append(int(geom_id))
+        return ids
+
+    def _v99_sequential_ik_clearance(
+        self,
+        positions: np.ndarray,
+        rotations: np.ndarray,
+        *,
+        include_target: bool,
+        fixture: dict[str, Any],
+    ) -> dict[str, Any]:
+        from pact_geom_distance import true_distance
+        from pact_place_v99_pendant_contract import (
+            MIN_NOMINAL_CLEARANCE_M,
+            PENDANT_GEOM,
+        )
+
+        robot_view = self.task.env.current_robot.robot_view
+        kinematics = self.task.env.current_robot.kinematics
+        gripper_mg_id = robot_view.get_gripper_movegroup_ids()[0]
+        saved = {
+            key: np.asarray(value, dtype=float).copy()
+            for key, value in robot_view.get_qpos_dict().items()
+        }
+        model, data = self.task.env.current_model, self.task.env.current_data
+        robot_ids = self._v99_collision_robot_geom_ids()
+        target_ids = self._v99_target_geom_ids() if include_target else []
+        probe_ids = robot_ids + target_ids
+        try:
+            pendant_gid = int(model.geom(PENDANT_GEOM).id)
+        except (KeyError, ValueError, TypeError):
+            return {"ik_ok": False, "ik_failures": len(positions), "nominal_clearance_m": None}
+        seed = dict(saved)
+        failures = 0
+        clearances: list[float] = []
+        try:
+            for index in range(len(positions)):
+                pose = self._place_pose(positions[index], rotations[index])
+                solution = kinematics.ik(
+                    gripper_mg_id,
+                    pose,
+                    robot_view.move_group_ids(),
+                    seed,
+                    base_pose=robot_view.base.pose,
+                )
+                if solution is None:
+                    failures += 1
+                    continue
+                robot_view.set_qpos_dict(solution)
+                mujoco.mj_forward(model, data)
+                seed = {
+                    key: np.asarray(value, dtype=float).copy()
+                    for key, value in robot_view.get_qpos_dict().items()
+                }
+                if probe_ids:
+                    clearances.append(
+                        float(true_distance(model, data, probe_ids, [pendant_gid]))
+                    )
+        finally:
+            robot_view.set_qpos_dict(saved)
+            mujoco.mj_forward(model, data)
+        nominal = min(clearances) if clearances else None
+        return {
+            "ik_ok": bool(failures == 0 and clearances),
+            "ik_failures": int(failures),
+            "nominal_clearance_m": None if nominal is None else float(nominal),
+            "meets_nominal": bool(
+                nominal is not None and float(nominal) + 1e-12 >= MIN_NOMINAL_CLEARANCE_M
+            ),
+        }
+
+    def _v99_apply_lane(
+        self,
+        segments: list[TCPMoveSegment],
+        *,
+        prefix: str,
+        include_target: bool,
+    ) -> list[TCPMoveSegment]:
+        if not self._v99_enabled() or not segments:
+            return segments
+        scene = getattr(self.task, "scene_params", {}) or {}
+        if scene.get("pact_v99_pendant_parked"):
+            self._v99_record_route(prefix, parked=True, ik_ok=True)
+            return segments
+        from pact_place_v99_pendant_contract import MIN_DETOUR_M
+        from pact_place_v99_route import named_lane_segments, plan_lane
+
+        fixture = dict(scene.get("pact_v99_pendant_fixture") or {})
+        route = dict(scene.get("pact_v99_route") or {})
+        layout = scene.get("pact_clutter_layout") or {}
+        panel_side = str(
+            scene.get("intrusion_side") or layout.get("intrusion_side") or ""
+        )
+        if prefix.startswith("inbound"):
+            lane_y = route.get("inbound_lane_y_m")
+            padding = route.get("inbound_padding_m", route.get("slab_padding_m"))
+            freeze_start, freeze_final = False, True
+        else:
+            lane_y = route.get("outbound_lane_y_m")
+            padding = route.get("outbound_padding_m", route.get("slab_padding_m"))
+            freeze_start, freeze_final = True, False
+        if lane_y is None or padding is None or not fixture:
+            self._v99_record_route(prefix, fallback_taken=True)
+            raise ValueError(f"V9.9 {prefix} route parameters are missing")
+        positions = [segments[0].start_pose[:3, 3].copy()]
+        rotations = [segments[0].start_pose[:3, :3].copy()]
+        for segment in segments:
+            positions.append(segment.end_pose[:3, 3].copy())
+            rotations.append(segment.end_pose[:3, :3].copy())
+        planned = plan_lane(
+            np.asarray(positions, dtype=float),
+            np.asarray(rotations, dtype=float),
+            fixture=fixture,
+            panel_side=panel_side,
+            lane_y_m=float(lane_y),
+            padding_m=float(padding),
+            aperture_width_m=float(scene.get("ap_w", 0.85)),
+            freeze_start=freeze_start,
+            freeze_final=freeze_final,
+        )
+        detour = planned["detour"]
+        if planned["clipped"] or planned["wrong_way"]:
+            self._v99_record_route(
+                prefix,
+                lane_y_m=float(lane_y),
+                padding_m=float(padding),
+                clipped=bool(planned["clipped"]),
+                wrong_way=bool(planned["wrong_way"]),
+                fallback_taken=True,
+                min_abs_detour_m=float(detour["min_abs_detour_m"]),
+            )
+            raise ValueError(f"V9.9 {prefix} lane is clipped or wrong-way")
+        if not detour["meets_minimum"]:
+            self._v99_record_route(
+                prefix,
+                lane_y_m=float(lane_y),
+                padding_m=float(padding),
+                entry_x_m=float(planned["entry_x_m"]),
+                exit_x_m=float(planned["exit_x_m"]),
+                min_abs_detour_m=float(detour["min_abs_detour_m"]),
+                detour_meets_minimum=False,
+                fallback_taken=True,
+            )
+            raise ValueError(
+                f"V9.9 {prefix} detour {detour['min_abs_detour_m']:.4f} m "
+                f"< {MIN_DETOUR_M} m"
+            )
+        clearance = self._v99_sequential_ik_clearance(
+            planned["planned_positions_m"],
+            planned["planned_rotations"],
+            include_target=include_target,
+            fixture=fixture,
+        )
+        if not clearance["ik_ok"] or not clearance["meets_nominal"]:
+            self._v99_record_route(
+                prefix,
+                lane_y_m=float(lane_y),
+                padding_m=float(padding),
+                entry_x_m=float(planned["entry_x_m"]),
+                exit_x_m=float(planned["exit_x_m"]),
+                min_abs_detour_m=float(detour["min_abs_detour_m"]),
+                detour_meets_minimum=True,
+                nominal_clearance_m=clearance.get("nominal_clearance_m"),
+                ik_ok=bool(clearance["ik_ok"]),
+                ik_failures=int(clearance["ik_failures"]),
+                fallback_taken=True,
+            )
+            raise ValueError(f"V9.9 {prefix} sequential IK or clearance failed")
+        pieces = named_lane_segments(
+            planned["planned_positions_m"],
+            planned["planned_rotations"],
+            prefix=prefix,
+            entry_x=float(planned["entry_x_m"]),
+            exit_x=float(planned["exit_x_m"]),
+            stock_end=segments[-1].end_pose[:3, 3],
+        )
+        speed = float(segments[0].speed)
+        rebuilt: list[TCPMoveSegment] = []
+        for piece in pieces:
+            poses = np.asarray(piece["positions_m"], dtype=float)
+            rots = np.asarray(piece["rotations"], dtype=float)
+            if len(poses) < 2:
+                continue
+            for index in range(1, len(poses)):
+                rebuilt.append(
+                    TCPMoveSegment(
+                        name=str(piece["name"]),
+                        start_pose=self._place_pose(poses[index - 1], rots[index - 1]),
+                        end_pose=self._place_pose(poses[index], rots[index]),
+                        speed=speed,
+                    )
+                )
+        if not rebuilt:
+            self._v99_record_route(prefix, fallback_taken=True)
+            raise ValueError(f"V9.9 {prefix} produced no lane segments")
+        rebuilt[-1].end_pose = segments[-1].end_pose.copy()
+        rebuilt[0].start_pose = segments[0].start_pose.copy()
+        self._v99_record_route(
+            prefix,
+            lane_y_m=float(lane_y),
+            padding_m=float(padding),
+            entry_x_m=float(planned["entry_x_m"]),
+            exit_x_m=float(planned["exit_x_m"]),
+            min_abs_detour_m=float(detour["min_abs_detour_m"]),
+            detour_meets_minimum=True,
+            nominal_clearance_m=clearance.get("nominal_clearance_m"),
+            ik_ok=True,
+            ik_failures=0,
+            fallback_taken=False,
+            clipped=False,
+            wrong_way=False,
+        )
+        if prefix.startswith("inbound"):
+            self.inbound_deflected = True
+        else:
+            self.outbound_deflected = True
+        return rebuilt
+
+    def _v10_record_route(self, prefix: str, **fields: Any) -> None:
+        record = self._v99_empty_route_record()
+        record.update(fields)
+        self._pact_place_v10_route[prefix] = record
+
+    def _v10_active_pendant_geom_ids(self) -> list[int]:
+        from pact_place_v10_compound_pendant_contract import ALL_GEOMS
+
+        model = self.task.env.current_model
+        ids: list[int] = []
+        for name in ALL_GEOMS:
+            geom_id = int(model.geom(name).id)
+            if int(model.geom_contype[geom_id]) == 0 and int(
+                model.geom_conaffinity[geom_id]
+            ) == 0:
+                continue
+            ids.append(geom_id)
+        return ids
+
+    def _v10_strict_environment_geom_ids(self) -> list[int]:
+        model = self.task.env.current_model
+        target_ids = set(self._v99_target_geom_ids())
+        pendant_ids = set(self._v10_active_pendant_geom_ids())
+        ids: list[int] = []
+        for geom_id in range(int(model.ngeom)):
+            if geom_id in target_ids or geom_id in pendant_ids:
+                continue
+            body = str(model.body(int(model.geom_bodyid[geom_id])).name or "")
+            if body.startswith("robot_0/"):
+                continue
+            if int(model.geom_contype[geom_id]) == 0 and int(
+                model.geom_conaffinity[geom_id]
+            ) == 0:
+                continue
+            ids.append(int(geom_id))
+        return ids
+
+    def _v10_sequential_ik_clearance(
+        self,
+        positions: np.ndarray,
+        rotations: np.ndarray,
+        *,
+        include_target: bool,
+        min_pendant_m: float | None = None,
+        pendant_geom_ids: list[int] | None = None,
+        environment_geom_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        from pact_geom_distance import true_distance
+        from pact_place_v10_compound_pendant_contract import MIN_NOMINAL_CLEARANCE_M
+        from pact_place_v10_route import sequential_ik_split_clearance
+
+        robot_view = self.task.env.current_robot.robot_view
+        kinematics = self.task.env.current_robot.kinematics
+        gripper_mg_id = robot_view.get_gripper_movegroup_ids()[0]
+        saved = {
+            key: np.asarray(value, dtype=float).copy()
+            for key, value in robot_view.get_qpos_dict().items()
+        }
+        model, data = self.task.env.current_model, self.task.env.current_data
+        robot_ids = list(self._v99_collision_robot_geom_ids())
+        target_ids = list(self._v99_target_geom_ids()) if include_target else []
+        probe_ids = robot_ids + target_ids
+        pendant_ids = (
+            list(pendant_geom_ids)
+            if pendant_geom_ids is not None
+            else list(self._v10_active_pendant_geom_ids())
+        )
+        env_ids = (
+            list(environment_geom_ids)
+            if environment_geom_ids is not None
+            else list(self._v10_strict_environment_geom_ids())
+        )
+        threshold = (
+            float(MIN_NOMINAL_CLEARANCE_M)
+            if min_pendant_m is None
+            else float(min_pendant_m)
+        )
+
+        def solve_ik(pose, seed):
+            return kinematics.ik(
+                gripper_mg_id,
+                pose,
+                robot_view.move_group_ids(),
+                seed,
+                base_pose=robot_view.base.pose,
+            )
+
+        def measure_pendant():
+            if not probe_ids or not pendant_ids:
+                return None
+            return true_distance(model, data, probe_ids, pendant_ids)
+
+        def measure_environment():
+            if not probe_ids or not env_ids:
+                return None
+            return true_distance(model, data, probe_ids, env_ids)
+
+        report = sequential_ik_split_clearance(
+            positions,
+            rotations,
+            saved_qpos=saved,
+            set_qpos=robot_view.set_qpos_dict,
+            get_qpos=robot_view.get_qpos_dict,
+            solve_ik=solve_ik,
+            forward=lambda: mujoco.mj_forward(model, data),
+            place_pose=self._place_pose,
+            measure_pendant=measure_pendant,
+            measure_environment=measure_environment,
+            min_pendant_m=threshold,
+        )
+        report["probe_ids"] = list(probe_ids)
+        report["pendant_geom_ids"] = list(pendant_ids)
+        report["environment_geom_ids"] = list(env_ids)
+        report["include_target"] = bool(include_target)
+        report["nominal_clearance_m"] = report.get("pendant_clearance_m")
+        report["meets_nominal"] = bool(report.get("meets_pendant"))
+        return report
+
+    def _v10_evaluate_nominal_and_robust(
+        self,
+        planned: dict[str, Any],
+        *,
+        include_target: bool,
+        fixture: dict[str, Any],
+        freeze_start: bool,
+        freeze_final: bool,
+        aperture_width_m: float,
+        panel_side: str,
+        padding_m: float,
+        endpoint_only: bool = False,
+    ) -> dict[str, Any]:
+        from pact_place_v10_compound_pendant_contract import (
+            MIN_NOMINAL_CLEARANCE_M,
+            MIN_ROBUST_CLEARANCE_M,
+        )
+        from pact_place_v10_route import (
+            evaluate_all_perturbation_corners,
+            evaluate_environment_no_intersection,
+            evaluate_pendant_nominal_and_robust,
+            plan_lane_at_parameters,
+            plan_lane_at_parameters_endpoint_only,
+        )
+
+        stock_p = planned.get("stock_positions_m")
+        stock_r = planned.get("stock_rotations")
+        if stock_p is None or stock_r is None:
+            raise ValueError("planned lane is missing densified stock TCP")
+        planner = (
+            plan_lane_at_parameters_endpoint_only
+            if endpoint_only
+            else plan_lane_at_parameters
+        )
+        nominal = self._v10_sequential_ik_clearance(
+            planned["planned_positions_m"],
+            planned["planned_rotations"],
+            include_target=include_target,
+            min_pendant_m=MIN_NOMINAL_CLEARANCE_M,
+        )
+
+        def evaluate_corner(corner: dict[str, Any]) -> dict[str, Any]:
+            corner_plan = planner(
+                stock_p,
+                stock_r,
+                fixture=fixture,
+                panel_side=panel_side,
+                lane_y_m=float(corner["lane_y_m"]),
+                padding_m=float(padding_m),
+                entry_x_m=float(corner["entry_x_m"]),
+                exit_x_m=float(corner["exit_x_m"]),
+                aperture_width_m=float(aperture_width_m),
+                freeze_start=freeze_start,
+                freeze_final=freeze_final,
+            )
+            report = self._v10_sequential_ik_clearance(
+                corner_plan["planned_positions_m"],
+                corner_plan["planned_rotations"],
+                include_target=include_target,
+                min_pendant_m=MIN_ROBUST_CLEARANCE_M,
+            )
+            report["planned_positions_m"] = corner_plan["planned_positions_m"]
+            report["lane_y_m"] = float(corner_plan["lane_y_m"])
+            report["entry_x_m"] = float(corner_plan["entry_x_m"])
+            report["exit_x_m"] = float(corner_plan["exit_x_m"])
+            report["clipped"] = bool(corner_plan["clipped"])
+            report["wrong_way"] = bool(corner_plan["wrong_way"])
+            return report
+
+        corners = evaluate_all_perturbation_corners(planned, evaluate_corner)
+        pendant = evaluate_pendant_nominal_and_robust(
+            min_nominal_m=MIN_NOMINAL_CLEARANCE_M,
+            min_robust_m=MIN_ROBUST_CLEARANCE_M,
+            nominal_clearance_m=nominal.get("pendant_clearance_m"),
+            corner_clearances_m=[item.get("pendant_clearance_m") for item in corners],
+        )
+        env_distances = [nominal.get("environment_clearance_m")] + [
+            item.get("environment_clearance_m") for item in corners
+        ]
+        environment = evaluate_environment_no_intersection(env_distances)
+        robust_ik_ok = all(bool(item.get("ik_ok")) for item in corners)
+        accepted = bool(
+            nominal.get("ik_ok")
+            and robust_ik_ok
+            and pendant["meets_nominal"]
+            and pendant["meets_robust"]
+            and environment["environment_clear"]
+            and not any(item.get("clipped") or item.get("wrong_way") for item in corners)
+        )
+        return {
+            "nominal": nominal,
+            "corners": corners,
+            "pendant": pendant,
+            "environment": environment,
+            "n_corners_evaluated": 8,
+            "all_corners_evaluated": True,
+            "robust_ik_ok": bool(robust_ik_ok),
+            "accepted": accepted,
+            "min_robust_clearance_m": (
+                None
+                if any(item.get("pendant_clearance_m") is None for item in corners)
+                else float(min(float(item["pendant_clearance_m"]) for item in corners))
+            ),
+        }
+
+    def _v102_active_component_geoms(self) -> list[tuple[str, int]]:
+        """(component name, geom id) for every collision-enabled V10.2 geom."""
+        scene = getattr(self.task, "scene_params", {}) or {}
+        assembly = dict(scene.get("pact_v10_pendant_assembly") or {})
+        model = self.task.env.current_model
+        pairs: list[tuple[str, int]] = []
+        for item in assembly.get("components") or []:
+            if not item.get("active"):
+                continue
+            geom_id = int(model.geom(str(item["geom"])).id)
+            if int(model.geom_contype[geom_id]) == 0 and int(
+                model.geom_conaffinity[geom_id]
+            ) == 0:
+                continue
+            pairs.append((str(item["name"]), geom_id))
+        return pairs
+
+    def _v102_probe_geom_ids(self, *, include_target: bool) -> list[int]:
+        """Cached robot (and optionally target) collision geoms.
+
+        Geom membership is fixed for an episode; rescanning ``model.ngeom`` on
+        every policy frame would dominate the telemetry cost.
+        """
+        cache = self._pact_v102_probe_ids
+        key = bool(include_target)
+        if key not in cache:
+            ids = list(self._v99_collision_robot_geom_ids())
+            if key:
+                ids = ids + list(self._v99_target_geom_ids())
+            cache[key] = ids
+        return list(cache[key])
+
+    def _v102_component_clearances(
+        self, *, include_target: bool
+    ) -> dict[str, float | None]:
+        from pact_geom_distance import true_distance
+
+        model, data = self.task.env.current_model, self.task.env.current_data
+        probe_ids = self._v102_probe_geom_ids(include_target=include_target)
+        out: dict[str, float | None] = {}
+        for name, geom_id in self._v102_cached_component_geoms():
+            value = float(true_distance(model, data, probe_ids, [geom_id]))
+            out[name] = None if not np.isfinite(value) else value
+        return out
+
+    def _v102_route_sequential_ik(
+        self, planned: dict[str, Any], *, include_target: bool
+    ) -> dict[str, Any]:
+        """Full-waypoint sequential IK with per-component pendant clearance.
+
+        Deliberately does not call the flawed scalar robot-versus-all-environment
+        preclearance. It never aborts early, so an environment abort after one
+        waypoint can never be reported as an IK pass.
+        """
+        import mujoco
+
+        from pact_place_v102_route import sequential_ik_component_clearance
+
+        robot_view = self.task.env.current_robot.robot_view
+        kinematics = self.task.env.current_robot.kinematics
+        gripper_mg_id = robot_view.get_gripper_movegroup_ids()[0]
+        model, data = self.task.env.current_model, self.task.env.current_data
+        saved = {
+            key: np.asarray(value, dtype=float).copy()
+            for key, value in robot_view.get_qpos_dict().items()
+        }
+        component_names = [name for name, _gid in self._v102_active_component_geoms()]
+
+        def solve_ik(pose, seed):
+            return kinematics.ik(
+                gripper_mg_id,
+                pose,
+                robot_view.move_group_ids(),
+                seed,
+                base_pose=robot_view.base.pose,
+            )
+
+        return sequential_ik_component_clearance(
+            planned["planned_positions_m"],
+            planned["planned_rotations"],
+            saved_qpos=saved,
+            set_qpos=robot_view.set_qpos_dict,
+            get_qpos=robot_view.get_qpos_dict,
+            solve_ik=solve_ik,
+            forward=lambda: mujoco.mj_forward(model, data),
+            place_pose=self._place_pose,
+            component_names=component_names,
+            measure_components=lambda: self._v102_component_clearances(
+                include_target=include_target
+            ),
+        )
+
+    def _v10_apply_lane(
+        self,
+        segments: list[TCPMoveSegment],
+        *,
+        prefix: str,
+        include_target: bool,
+    ) -> list[TCPMoveSegment]:
+        if not self._v10_enabled() or not segments:
+            return segments
+        scene = getattr(self.task, "scene_params", {}) or {}
+        if scene.get("pact_v10_pendant_parked"):
+            self._v10_record_route(prefix, parked=True, ik_ok=True)
+            return segments
+        from pact_place_v10_compound_pendant_contract import MIN_DETOUR_M
+        from pact_place_v10_route import (
+            frozen_endpoint_preserved,
+            named_lane_segments,
+            plan_lane,
+            plan_lane_endpoint_only,
+            resolve_v10_runtime_route,
+        )
+        from pact_place_v102_route import resolve_v102_runtime_route
+
+        assembly = dict(scene.get("pact_v10_pendant_assembly") or {})
+        route = dict(scene.get("pact_v10_route") or {})
+        # V10.2 dispatch needs the exact contract marker and speed-schedule
+        # hash. Without them this returns None and V10/V10.1 rows keep the
+        # frozen historical dispatch unchanged.
+        v102 = resolve_v102_runtime_route(scene, route)
+        dispatch = v102 if v102 is not None else resolve_v10_runtime_route(route)
+        layout = scene.get("pact_clutter_layout") or {}
+        panel_side = str(
+            scene.get("intrusion_side") or layout.get("intrusion_side") or ""
+        )
+        if prefix.startswith("inbound"):
+            lane_y = route.get("inbound_lane_y_m")
+            padding = route.get("inbound_padding_m", route.get("slab_padding_m"))
+            freeze_start, freeze_final = False, True
+        else:
+            lane_y = route.get("outbound_lane_y_m")
+            padding = route.get("outbound_padding_m", route.get("slab_padding_m"))
+            freeze_start, freeze_final = True, False
+        telemetry = {
+            "rewrite_primitive": dispatch["rewrite_primitive"],
+            "qualification_mode": dispatch["qualification_mode"],
+            "offline_strict_environment_preclearance_used": (
+                not dispatch["skip_offline_strict_environment"]
+            ),
+            "strict_environment_preclearance_intentionally_not_used": bool(
+                dispatch["skip_offline_strict_environment"]
+            ),
+        }
+        if v102 is not None:
+            telemetry["speed_schedule_sha256"] = str(v102["speed_schedule_sha256"])
+            telemetry["speed_schedule"] = dict(v102["speed_schedule"])
+        if lane_y is None or padding is None or not assembly:
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(f"V10 {prefix} route parameters are missing")
+        telemetry.update(lane_y_m=float(lane_y), padding_m=float(padding))
+        positions = [segments[0].start_pose[:3, 3].copy()]
+        rotations = [segments[0].start_pose[:3, :3].copy()]
+        for segment in segments:
+            positions.append(segment.end_pose[:3, 3].copy())
+            rotations.append(segment.end_pose[:3, :3].copy())
+        planner = (
+            plan_lane_endpoint_only if dispatch["use_endpoint_only"] else plan_lane
+        )
+        planned = planner(
+            np.asarray(positions, dtype=float),
+            np.asarray(rotations, dtype=float),
+            assembly=assembly,
+            panel_side=panel_side,
+            lane_y_m=float(lane_y),
+            padding_m=float(padding),
+            aperture_width_m=float(scene.get("ap_w", 0.85)),
+            freeze_start=freeze_start,
+            freeze_final=freeze_final,
+        )
+        detour = planned["detour"]
+        endpoints = dict(planned.get("frozen_endpoints") or {})
+        if not endpoints:
+            endpoints = frozen_endpoint_preserved(
+                planned["planned_positions_m"],
+                planned["planned_rotations"],
+                planned.get("stock_positions_m", np.asarray(positions, dtype=float)),
+                planned.get("stock_rotations", np.asarray(rotations, dtype=float)),
+                freeze_start=freeze_start,
+                freeze_final=freeze_final,
+            )
+        telemetry.update(
+            entry_x_m=float(planned["entry_x_m"]),
+            exit_x_m=float(planned["exit_x_m"]),
+            min_abs_detour_m=float(detour["min_abs_detour_m"]),
+            detour_meets_minimum=bool(detour["meets_minimum"]),
+            clipped=bool(planned["clipped"]),
+            wrong_way=bool(planned["wrong_way"]),
+            frozen_endpoint_preserved=bool(endpoints.get("preserved")),
+            start_preserved=bool(endpoints.get("start_preserved")),
+            final_preserved=bool(endpoints.get("final_preserved")),
+            densify_max_translation_m=float(
+                (planned.get("path_steps") or {}).get("max_translation_m") or 0.0
+            ),
+            densify_max_rotation_deg=float(
+                (planned.get("path_steps") or {}).get("max_rotation_deg") or 0.0
+            ),
+        )
+        if planned["clipped"] or planned["wrong_way"]:
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(f"V10 {prefix} lane is clipped or wrong-way")
+        if not detour["meets_minimum"]:
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(
+                f"V10 {prefix} detour {detour['min_abs_detour_m']:.4f} m "
+                f"< {MIN_DETOUR_M} m"
+            )
+        if dispatch["use_endpoint_only"] and not endpoints.get("preserved"):
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(f"V10 {prefix} frozen endpoints were mutated")
+        if dispatch["use_endpoint_only"] and not planned.get("continuous_after_densify"):
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(f"V10 {prefix} densified path exceeds step limits")
+        clearance = None
+        nominal: dict[str, Any] = {}
+        if not dispatch["skip_offline_strict_environment"]:
+            clearance = self._v10_evaluate_nominal_and_robust(
+                planned,
+                include_target=include_target,
+                fixture=planned["union_fixture"],
+                freeze_start=freeze_start,
+                freeze_final=freeze_final,
+                aperture_width_m=float(scene.get("ap_w", 0.85)),
+                panel_side=panel_side,
+                padding_m=float(padding),
+                endpoint_only=bool(dispatch["use_endpoint_only"]),
+            )
+            nominal = clearance["nominal"]
+            telemetry.update(
+                nominal_clearance_m=nominal.get("pendant_clearance_m"),
+                robust_clearance_m=clearance.get("min_robust_clearance_m"),
+                environment_clear=bool(clearance["environment"]["environment_clear"]),
+                n_corners_evaluated=int(clearance["n_corners_evaluated"]),
+                all_corners_evaluated=True,
+                ik_ok=bool(nominal.get("ik_ok") and clearance.get("robust_ik_ok")),
+                ik_failures=int(nominal.get("ik_failures") or 0),
+            )
+            if not clearance["accepted"]:
+                self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+                raise ValueError(
+                    f"V10 {prefix} sequential IK or split clearance failed"
+                )
+        else:
+            telemetry.update(
+                n_corners_evaluated=0,
+                all_corners_evaluated=False,
+                environment_clear=None,
+                nominal_clearance_m=None,
+                robust_clearance_m=None,
+            )
+            if v102 is not None:
+                ik_report = self._v102_route_sequential_ik(
+                    planned, include_target=include_target
+                )
+                telemetry.update(
+                    waypoints_attempted=int(ik_report["waypoints_attempted"]),
+                    waypoints_solved=int(ik_report["waypoints_solved"]),
+                    complete_sequential_ik=bool(ik_report["complete_sequential_ik"]),
+                    ik_failures=len(ik_report["ik_failure_indices"]),
+                    route_qpos_restored=bool(ik_report["qpos_restored"]),
+                    nominal_clearance_m=ik_report["min_clearance_m"],
+                    per_component_min_clearance_m=dict(
+                        ik_report["per_component_min_clearance_m"]
+                    ),
+                )
+        pieces = named_lane_segments(
+            planned["planned_positions_m"],
+            planned["planned_rotations"],
+            prefix=prefix,
+            entry_x=float(planned["entry_x_m"]),
+            exit_x=float(planned["exit_x_m"]),
+            stock_end=segments[-1].end_pose[:3, 3],
+        )
+        # Historical rows keep the inherited behaviour: every rebuilt piece
+        # carries segments[0].speed. V10.2 assigns a speed per named piece so
+        # the fast empty-arm approach is not copied onto the pendant pass.
+        inherited_speed = float(segments[0].speed)
+        piece_speeds: list[dict[str, Any]] = []
+        rebuilt: list[TCPMoveSegment] = []
+        for piece in pieces:
+            poses = np.asarray(piece["positions_m"], dtype=float)
+            rots = np.asarray(piece["rotations"], dtype=float)
+            if len(poses) < 2:
+                continue
+            piece_name = str(piece["name"])
+            if v102 is not None:
+                from pact_place_v102_route import (
+                    classify_route_piece,
+                    route_piece_speed,
+                    speed_cap_violation,
+                )
+
+                speed = float(
+                    route_piece_speed(piece_name, inherited_speed_m_s=inherited_speed)
+                )
+                violation = speed_cap_violation(piece_name, speed)
+                if violation is not None:
+                    telemetry["piece_speeds"] = piece_speeds
+                    self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+                    raise ValueError(f"V10.2 {piece_name} {violation}: {speed:.4f} m/s")
+                speed_class = classify_route_piece(piece_name)
+            else:
+                speed = inherited_speed
+                speed_class = "inherited"
+            piece_speeds.append(
+                {
+                    "name": piece_name,
+                    "speed_class": speed_class,
+                    "requested_speed_m_s": float(speed),
+                    "inherited_speed_m_s": inherited_speed,
+                    "n_segments": int(len(poses) - 1),
+                }
+            )
+            for index in range(1, len(poses)):
+                rebuilt.append(
+                    TCPMoveSegment(
+                        name=piece_name,
+                        start_pose=self._place_pose(poses[index - 1], rots[index - 1]),
+                        end_pose=self._place_pose(poses[index], rots[index]),
+                        speed=float(speed),
+                    )
+                )
+        telemetry["piece_speeds"] = piece_speeds
+        if not rebuilt:
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(f"V10 {prefix} produced no lane segments")
+        rebuilt[-1].end_pose = segments[-1].end_pose.copy()
+        rebuilt[0].start_pose = segments[0].start_pose.copy()
+        start_ok = bool(
+            np.allclose(
+                rebuilt[0].start_pose[:3, 3],
+                segments[0].start_pose[:3, 3],
+                atol=1e-9,
+            )
+        )
+        final_ok = bool(
+            np.allclose(
+                rebuilt[-1].end_pose[:3, 3],
+                segments[-1].end_pose[:3, 3],
+                atol=1e-9,
+            )
+        )
+        if dispatch["use_endpoint_only"] and not (start_ok and final_ok):
+            telemetry["frozen_endpoint_preserved"] = False
+            self._v10_record_route(prefix, fallback_taken=True, **telemetry)
+            raise ValueError(f"V10 {prefix} rebuilt path changed endpoints")
+        telemetry.update(
+            fallback_taken=False,
+            clipped=False,
+            wrong_way=False,
+        )
+        if v102 is None:
+            telemetry.update(ik_ok=True, ik_failures=0)
+        else:
+            telemetry["ik_ok"] = bool(telemetry.get("complete_sequential_ik"))
+        self._v10_record_route(prefix, **telemetry)
+        if prefix.startswith("inbound"):
+            self.inbound_deflected = True
+        else:
+            self.outbound_deflected = True
+        return rebuilt
+
     @staticmethod
     def _interpolate_pose(start: np.ndarray, end: np.ndarray, t: float) -> np.ndarray:
         lin_vel, ang_vel = transform_to_twist(np.linalg.inv(start) @ end)
@@ -3997,6 +5346,11 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                     "pact_place_corridor_v9_4_mounted_preview",
                     "pact_place_corridor_v9_5_low_wall",
                     "pact_place_corridor_v9_8_pendant",
+                    "pact_place_corridor_v9_9_pendant",
+                    PACT_PLACE_V10_ENVIRONMENT_VERSION,
+                    PACT_PLACE_V102_ENVIRONMENT_VERSION,
+                    PACT_PLACE_V105_ENVIRONMENT_VERSION,
+                    PACT_PLACE_V106_ENVIRONMENT_VERSION,
                 }
                 else "outbound_vessel"
             )
@@ -4062,20 +5416,13 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 inbound_prefix.append(inbound_pre)
         else:
             inbound_prefix.append(inbound_pre)
-        environment_version = str(
-            (getattr(self.task, "scene_params", {}) or {}).get(
-                "pact_place_environment_version", ""
-            )
+        scene = getattr(self.task, "scene_params", {}) or {}
+        environment_version = str(scene.get("pact_place_environment_version", ""))
+        fixture_roles = self._mounted_fixture_roles(
+            environment_version,
+            pendant_lateral_bow=bool(scene.get("pact_v98_pendant_lateral_bow")),
         )
-        if environment_version in {
-            "pact_place_corridor_v9_4_mounted_preview",
-            "pact_place_corridor_v9_5_low_wall",
-        }:
-            fixture_roles = (
-                ("wall_fixture", "ceiling_fixture")
-                if environment_version == "pact_place_corridor_v9_4_mounted_preview"
-                else ("wall_fixture",)
-            )
+        if fixture_roles:
             for fixture_role in fixture_roles:
                 fixture = next(
                     (
@@ -4102,7 +5449,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                         pieces, bowed = self._bow_segment(
                             candidate_segment,
                             prefix=prefix,
-                            envelope_half_y=self.MOUNTED_FIXTURE_ENVELOPE_HALF_Y,
+                            envelope_half_y=self._mounted_fixture_bow_envelope_half_y(
+                                fixture_role, route_side
+                            ),
                             safe_gap=self.MOUNTED_FIXTURE_SAFE_GAP,
                             center=np.asarray(fixture["center"], dtype=float),
                             half=np.asarray(fixture["half"], dtype=float),
@@ -4114,6 +5463,12 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                     fixture_bowed |= bowed
                 inbound_prefix = fixture_segments
                 self.inbound_deflected |= fixture_bowed
+        inbound_prefix = self._v99_apply_lane(
+            inbound_prefix, prefix="inbound_pendant", include_target=False
+        )
+        inbound_prefix = self._v10_apply_lane(
+            inbound_prefix, prefix="inbound_pendant", include_target=False
+        )
         adjusted_grasp_pose = stock_inbound_grasp.end_pose.copy()
         adjusted_grasp_pose[2, 3] += self.GRASP_WORLD_Z_OFFSET_M
         if not self.check_feasible_ik(adjusted_grasp_pose):
@@ -4206,6 +5561,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 "pact_place_corridor_v9_4_mounted_preview",
                 "pact_place_corridor_v9_5_low_wall",
                 "pact_place_corridor_v9_8_pendant",
+                "pact_place_corridor_v9_9_pendant",
+                PACT_PLACE_V10_ENVIRONMENT_VERSION,
+                PACT_PLACE_V102_ENVIRONMENT_VERSION,
             }
             else self.V9_OUTSIDE_STAGING_X_M
             if self._v9_enabled()
@@ -4282,6 +5640,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 "pact_place_corridor_v9_4_mounted_preview",
                 "pact_place_corridor_v9_5_low_wall",
                 "pact_place_corridor_v9_8_pendant",
+                "pact_place_corridor_v9_9_pendant",
+                PACT_PLACE_V10_ENVIRONMENT_VERSION,
+                PACT_PLACE_V102_ENVIRONMENT_VERSION,
             }:
                 inbound_hazard = next(
                     (
@@ -4306,21 +5667,15 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                         cross_vessel_segments.extend(pieces)
                         vessel_bowed |= bowed
                     outbound_segments = cross_vessel_segments
-            # V9.8 is intentionally absent here. ``_bow_segment`` is a purely
-            # lateral (y) detour and the V9.8 pendant is a ceiling obstacle
-            # centred on y = 0, so a lateral bow around it computes a spurious
-            # 0.29-0.38 m detour that drives the arm into the bench clutter.
-            # Vertical clearance is the correct response; the 3-D ``_surf_dist``
-            # speed law still sees the pendant.
-            if environment_version in {
-                "pact_place_corridor_v9_4_mounted_preview",
-                "pact_place_corridor_v9_5_low_wall",
-            }:
-                fixture_roles = (
-                    ("wall_fixture", "ceiling_fixture")
-                    if environment_version == "pact_place_corridor_v9_4_mounted_preview"
-                    else ("wall_fixture",)
-                )
+            fixture_roles = self._mounted_fixture_roles(
+                environment_version,
+                pendant_lateral_bow=bool(
+                    (getattr(self.task, "scene_params", {}) or {}).get(
+                        "pact_v98_pendant_lateral_bow"
+                    )
+                ),
+            )
+            if fixture_roles:
                 for fixture_role in fixture_roles:
                     fixture = next(
                         (
@@ -4347,7 +5702,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                             pieces, bowed = self._bow_segment(
                                 candidate_segment,
                                 prefix=prefix,
-                                envelope_half_y=self.MOUNTED_FIXTURE_ENVELOPE_HALF_Y,
+                                envelope_half_y=self._mounted_fixture_bow_envelope_half_y(
+                                    fixture_role, route_side
+                                ),
                                 safe_gap=self.MOUNTED_FIXTURE_SAFE_GAP,
                                 center=np.asarray(fixture["center"], dtype=float),
                                 half=np.asarray(fixture["half"], dtype=float),
@@ -4364,6 +5721,12 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             self.outbound_deflected = bool(panel_bowed or vessel_bowed)
         else:
             self.outbound_deflected = panel_bowed
+        outbound_segments = self._v99_apply_lane(
+            outbound_segments, prefix="outbound_pendant", include_target=True
+        )
+        outbound_segments = self._v10_apply_lane(
+            outbound_segments, prefix="outbound_pendant", include_target=True
+        )
         if outbound_segments:
             outbound_segments = [
                 *self._subdivide_tcp_segment(
@@ -4415,6 +5778,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             self.behavior_class = "scripted_two_phase_bidirectional_deflect"
         else:
             self.behavior_class = "scripted_two_phase_straight"
+        primitives = self._v104_apply_speed_amendment(primitives)
+        primitives = self._v105_apply_speed_amendment(primitives)
+        primitives = self._v106_apply_speed_amendment(primitives)
         return primitives
 
     @staticmethod
@@ -4458,6 +5824,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "inbound_ceiling_fixture_approach",
             "inbound_ceiling_fixture_pass",
             "inbound_ceiling_fixture_exit",
+            "inbound_pendant_approach",
+            "inbound_pendant_pass",
+            "inbound_pendant_exit",
             "deflect",
             "pass_protrusion",
             "inbound_grasp",
@@ -4475,6 +5844,9 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             "outbound_ceiling_fixture_approach",
             "outbound_ceiling_fixture_pass",
             "outbound_ceiling_fixture_exit",
+            "outbound_pendant_approach",
+            "outbound_pendant_pass",
+            "outbound_pendant_exit",
             "placement_descent",
         )
         next_id = max(phases.values()) + 1
@@ -4510,6 +5882,14 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         self.inbound_deflected = False
         self.outbound_deflected = False
         self._pact_place_bow_diagnostics = self._empty_bow_diagnostics()
+        self._pact_place_v99_route = {
+            "inbound_pendant": self._v99_empty_route_record(),
+            "outbound_pendant": self._v99_empty_route_record(),
+        }
+        self._pact_place_v10_route = {
+            "inbound_pendant": self._v99_empty_route_record(),
+            "outbound_pendant": self._v99_empty_route_record(),
+        }
         self._sensor_cam_ids = None
         self._pact_detected_hazard_names = set()
         self._pact_detected_hazards = []
@@ -4643,6 +6023,716 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             pass
         return super()._handle_failure()
 
+    def _v102_cached_component_geoms(self) -> list[tuple[str, int]]:
+        if self._pact_v102_component_geoms is None:
+            self._pact_v102_component_geoms = self._v102_active_component_geoms()
+        return list(self._pact_v102_component_geoms)
+
+    def _v102_live_pendant_contacts(self) -> dict[str, Any]:
+        """Raw ``data.contact`` and classifier views of pendant contact."""
+        from molmo_spaces.tasks.pact_place_contact_audit import (
+            classify_contact,
+            place_environment_contact_pairs,
+        )
+
+        model, data = self.task.env.current_model, self.task.env.current_data
+        pendant_ids = {gid for _name, gid in self._v102_cached_component_geoms()}
+        raw: list[dict[str, Any]] = []
+        for index in range(int(data.ncon)):
+            contact = data.contact[index]
+            if float(contact.dist) > 0.0:
+                continue
+            geom1, geom2 = int(contact.geom1), int(contact.geom2)
+            if geom1 not in pendant_ids and geom2 not in pendant_ids:
+                continue
+            raw.append(
+                {
+                    "geom1": model.geom(geom1).name or f"geom_{geom1}",
+                    "geom2": model.geom(geom2).name or f"geom_{geom2}",
+                    "distance_m": float(contact.dist),
+                }
+            )
+        classified = [
+            pair
+            for pair in place_environment_contact_pairs(self.task.env)
+            if classify_contact(pair) == "mounted_fixture"
+        ]
+        return {
+            "raw_contact_pairs": raw[:8],
+            "n_raw_contact_pairs": len(raw),
+            "n_classified_mounted_fixture_pairs": len(classified),
+            "classified_pairs": [
+                {
+                    "geom1": pair.get("geom1"),
+                    "geom2": pair.get("geom2"),
+                    "distance_m": pair.get("distance_m"),
+                }
+                for pair in classified[:8]
+            ],
+            "contact": bool(raw or classified),
+        }
+
+    def _v102_frame_telemetry(self) -> dict[str, Any]:
+        holding = str(self.get_phase() or "")
+        include_target = not (
+            holding.startswith("inbound")
+            or holding in {"gripper-open", "pregrasp", "grasp", "grasp_settle", "gripper-close"}
+        )
+        clearances = self._v102_component_clearances(include_target=include_target)
+        finite = [value for value in clearances.values() if value is not None]
+        contacts = self._v102_live_pendant_contacts()
+        return {
+            "component_clearance_m": clearances,
+            "min_clearance_m": float(min(finite)) if finite else None,
+            "clearance_includes_target": bool(include_target),
+            "pendant_contact": bool(contacts["contact"]),
+            "n_raw_pendant_contact_pairs": int(contacts["n_raw_contact_pairs"]),
+            "n_classified_mounted_fixture_pairs": int(
+                contacts["n_classified_mounted_fixture_pairs"]
+            ),
+            "contact_pairs": contacts["raw_contact_pairs"],
+        }
+
+    def _current_move_segment(self):
+        if self.action_idx >= len(self.action_primitives):
+            return None
+        primitive = self.action_primitives[self.action_idx]
+        if not isinstance(primitive, TCPMoveSequence):
+            return None
+        index = primitive.move_seg_idx
+        if index is None:
+            return None
+        segments = getattr(primitive, "_move_segments", None) or []
+        if not 0 <= int(index) < len(segments):
+            return None
+        return segments[int(index)]
+
+    def _v104_apply_speed_amendment(self, primitives):
+        """The single registered V10.4 initial free-space speed cap.
+
+        Gated on the exact V10.4 marker; V6c and every historical environment
+        return unchanged. Records the untouched baseline plan alongside the
+        amended one so the caller can prove exactly one segment differs.
+        """
+        from pact_place_v104_runtime import (
+            apply_initial_free_space_speed_cap,
+            plan_signature,
+            verify_plan_matches_baseline,
+        )
+
+        if not self._v104_enabled():
+            self._pact_place_v104_speed_amendment = {
+                "applied": False,
+                "reason": "environment marker is not V10.4",
+            }
+            return primitives
+        baseline = plan_signature(primitives)
+        record = apply_initial_free_space_speed_cap(primitives)
+        amended = plan_signature(primitives)
+        record["baseline_vs_amended"] = verify_plan_matches_baseline(baseline, amended)
+        record["baseline_plan"] = baseline
+        self._pact_place_v104_speed_amendment = record
+        return primitives
+
+    def _v104_pendant_geom_ids(self) -> list[int]:
+        if self._pact_v104_pendant_geom_ids is None:
+            from pact_place_v104_runtime import PENDANT_GEOM_PREFIX
+
+            model = self.task.env.current_model
+            ids = []
+            for geom_id in range(int(model.ngeom)):
+                name = str(model.geom(geom_id).name or "")
+                if name.startswith(PENDANT_GEOM_PREFIX):
+                    ids.append(int(geom_id))
+            self._pact_v104_pendant_geom_ids = ids
+        return list(self._pact_v104_pendant_geom_ids)
+
+    def _v104_probe_ids(self) -> list[int]:
+        if self._pact_v104_probe_ids is None:
+            from pact_place_v104_clearance import (
+                robot_collision_geom_ids,
+                target_collision_geom_ids,
+            )
+
+            model = self.task.env.current_model
+            ids = list(robot_collision_geom_ids(model)) + list(
+                target_collision_geom_ids(self.task)
+            )
+            self._pact_v104_probe_ids = ids
+        return list(self._pact_v104_probe_ids)
+
+    def _v104_current_segment(self):
+        """(primitive index, segment index, segment, holding) or Nones."""
+        if self.action_idx >= len(self.action_primitives):
+            return None, None, None, None
+        primitive = self.action_primitives[self.action_idx]
+        holding = bool(getattr(primitive, "is_holding_object", False))
+        if not isinstance(primitive, TCPMoveSequence):
+            return int(self.action_idx), None, None, holding
+        index = primitive.move_seg_idx
+        segments = getattr(primitive, "_move_segments", None) or []
+        if index is None or not 0 <= int(index) < len(segments):
+            return int(self.action_idx), None, None, holding
+        return int(self.action_idx), int(index), segments[int(index)], holding
+
+    def _v106_apply_speed_amendment(self, primitives):
+        """The single registered V10.6 initial free-space speed cap.
+
+        Gated on the exact V10.6 marker and on the baseline schedule hash, the
+        same double gate V10.5 uses. Every other inherited speed is untouched.
+        """
+        from pact_place_v105_runtime import (
+            apply_initial_free_space_speed_cap,
+            plan_signature,
+            schedule_sha256,
+            verify_plan_matches_baseline,
+        )
+
+        if not self._v106_enabled():
+            self._pact_place_v106_speed_amendment = {
+                "applied": False,
+                "reason": "environment marker is not V10.6",
+            }
+            return primitives
+        baseline = plan_signature(primitives)
+        baseline_schedule = schedule_sha256(primitives)
+        record = apply_initial_free_space_speed_cap(primitives)
+        amended = plan_signature(primitives)
+        record["baseline_vs_amended"] = verify_plan_matches_baseline(baseline, amended)
+        record["baseline_plan"] = baseline
+        record["baseline_schedule_sha256"] = baseline_schedule
+        record["marker_gated"] = True
+        record["schedule_gated"] = True
+        self._pact_place_v106_speed_amendment = record
+        return primitives
+
+    def _v106_assembly(self):
+        if self._pact_v106_assembly is None:
+            from pact_place_v106_geometry import POSE_OFFSETS_M, build_assembly
+
+            scene = getattr(self.task, "scene_params", {}) or {}
+            pose_id = scene.get("pact_v106_pose_id")
+            x = scene.get("pact_v106_x_m")
+            rn = scene.get("pact_v106_r_neg_m")
+            rp = scene.get("pact_v106_r_pos_m")
+            if pose_id is None or x is None or rn is None or rp is None:
+                return None
+            self._pact_v106_assembly = build_assembly(
+                float(x), float(rn), float(rp), POSE_OFFSETS_M[str(pose_id)],
+                pose_id=str(pose_id),
+            )
+        return self._pact_v106_assembly
+
+    def _v106_pendant_geom_ids(self) -> list[int]:
+        if self._pact_v106_pendant_geom_ids is None:
+            model = self.task.env.current_model
+            ids = []
+            for geom_id in range(int(model.ngeom)):
+                name = str(model.geom(geom_id).name or "")
+                if name.startswith("pact_clutter_mount_v106_"):
+                    ids.append(int(geom_id))
+            self._pact_v106_pendant_geom_ids = ids
+        return list(self._pact_v106_pendant_geom_ids)
+
+    def _v106_probe_ids(self) -> list[int]:
+        if self._pact_v106_probe_ids is None:
+            from pact_place_v105_clearance import (
+                robot_collision_geom_ids,
+                target_collision_geom_ids,
+            )
+
+            model = self.task.env.current_model
+            self._pact_v106_probe_ids = list(
+                robot_collision_geom_ids(model)
+            ) + list(target_collision_geom_ids(self.task))
+        return list(self._pact_v106_probe_ids)
+
+    def _v106_frame_telemetry(self) -> dict[str, Any]:
+        from pact_place_v105_clearance import (
+            assembly_boxes,
+            frame_clearances,
+            geom_shape_cache,
+            pendant_contact_state,
+            risk_boxes,
+        )
+
+        model, data = self.task.env.current_model, self.task.env.current_data
+        assembly = self._v106_assembly()
+        if assembly is None:
+            return {"telemetry_error": "V10.6 row lacks (x, r_neg, r_pos, pose_id)"}
+        if self._pact_v106_boxes is None:
+            self._pact_v106_boxes = assembly_boxes(assembly)
+            self._pact_v106_risk_boxes = risk_boxes(assembly)
+        probe = self._v106_probe_ids()
+        if self._pact_v106_shape_cache is None:
+            self._pact_v106_shape_cache = geom_shape_cache(model, probe)
+        report = frame_clearances(
+            model, data, self._pact_v106_boxes, probe, self._pact_v106_shape_cache
+        )
+        risk = frame_clearances(
+            model, data, self._pact_v106_risk_boxes, probe,
+            self._pact_v106_shape_cache,
+        )
+        contact = pendant_contact_state(model, data, self._v106_pendant_geom_ids())
+        return {
+            "pendant_min_clearance_m": report["min_m"],
+            "pendant_per_component_m": report["per_component_m"],
+            "pendant_limiting": report["limiting"],
+            "lobe_stem_min_clearance_m": risk["min_m"],
+            "lobe_stem_limiting": risk["limiting"],
+            "pendant_contact": bool(contact["contact"]),
+            "pendant_robot_or_target_contact": bool(
+                contact["robot_or_target_contact"]
+            ),
+            "pendant_contact_pairs": contact["pairs"],
+            "pendant_contact_classes": contact["contact_classes"],
+            "n_pendant_contact_pairs": int(contact["n_pairs"]),
+            "pose_id": (
+                getattr(self.task, "scene_params", {}) or {}
+            ).get("pact_v106_pose_id"),
+            "scene_sha256": (
+                getattr(self.task, "scene_params", {}) or {}
+            ).get("pact_v106_scene_sha256"),
+        }
+
+    def _v106_frame_summary(self) -> dict[str, Any]:
+        frames = list(self._pact_place_v106_frames)
+        if not frames:
+            return {}
+        names: list[str] = []
+        for frame in frames:
+            for name in (frame.get("pendant_per_component_m") or {}):
+                if name not in names:
+                    names.append(name)
+        per_component = {}
+        for name in names:
+            values = [
+                float(frame["pendant_per_component_m"][name])
+                for frame in frames
+                if (frame.get("pendant_per_component_m") or {}).get(name) is not None
+            ]
+            per_component[name] = float(min(values)) if values else None
+        measured = [f for f in frames if f.get("pendant_min_clearance_m") is not None]
+        risk_measured = [
+            f for f in frames if f.get("lobe_stem_min_clearance_m") is not None
+        ]
+        contact_frames = [f for f in frames if f.get("pendant_contact")]
+        robot_contact = [
+            f for f in frames if f.get("pendant_robot_or_target_contact")
+        ]
+        worst = (
+            min(measured, key=lambda f: float(f["pendant_min_clearance_m"]))
+            if measured else None
+        )
+        worst_risk = (
+            min(risk_measured, key=lambda f: float(f["lobe_stem_min_clearance_m"]))
+            if risk_measured else None
+        )
+        speeds: list[dict[str, Any]] = []
+        seen = set()
+        for frame in frames:
+            key = (
+                frame.get("primitive_index"), frame.get("segment_index"),
+                frame.get("segment_name"),
+                None if frame.get("commanded_speed_m_s") is None
+                else round(float(frame["commanded_speed_m_s"]), 9),
+            )
+            if key in seen or key[3] is None:
+                continue
+            seen.add(key)
+            speeds.append({
+                "primitive_index": key[0], "segment_index": key[1],
+                "segment_name": key[2], "commanded_speed_m_s": key[3],
+                "first_step": int(frame["step"]),
+            })
+        realized = [
+            float(f["realized_tcp_speed_m_s"]) for f in frames
+            if f.get("realized_tcp_speed_m_s") is not None
+        ]
+        return {
+            "schema_version": "pact_place_v106_frame_telemetry_v1",
+            "n_frames": len(frames), "n_frames_measured": len(measured),
+            "min_clearance_m": (
+                float(worst["pendant_min_clearance_m"]) if worst else None
+            ),
+            "min_lobe_stem_clearance_m": (
+                float(worst_risk["lobe_stem_min_clearance_m"])
+                if worst_risk else None
+            ),
+            "min_clearance_witness": ({
+                "step": int(worst["step"]),
+                "policy_phase": worst.get("policy_phase"),
+                "segment_name": worst.get("segment_name"),
+                "limiting": worst.get("pendant_limiting"),
+                "target_held": worst.get("target_held"),
+            } if worst else None),
+            "min_lobe_stem_witness": ({
+                "step": int(worst_risk["step"]),
+                "policy_phase": worst_risk.get("policy_phase"),
+                "segment_name": worst_risk.get("segment_name"),
+                "limiting": worst_risk.get("lobe_stem_limiting"),
+                "target_held": worst_risk.get("target_held"),
+            } if worst_risk else None),
+            "per_component_min_clearance_m": per_component,
+            "pendant_contact_frames": len(contact_frames),
+            "pendant_robot_or_target_contact_frames": len(robot_contact),
+            "first_pendant_contact_step": (
+                int(contact_frames[0]["step"]) if contact_frames else None
+            ),
+            "first_pendant_contact_pairs": (
+                contact_frames[0].get("pendant_contact_pairs")
+                if contact_frames else None
+            ),
+            "segment_speeds": speeds,
+            "max_realized_tcp_speed_m_s": max(realized) if realized else None,
+            "pose_id": frames[0].get("pose_id"),
+            "scene_sha256": frames[0].get("scene_sha256"),
+        }
+
+    def _v105_apply_speed_amendment(self, primitives):
+        """The single registered V10.5 initial free-space speed cap.
+
+        Gated twice: on the exact V10.5 marker, and on the hash of the
+        inherited baseline speed schedule. If the V9.3 plan ever changes shape
+        the schedule hash stops matching and this refuses rather than silently
+        capping a different segment. Every other inherited speed is untouched.
+        """
+        from pact_place_v105_runtime import (
+            apply_initial_free_space_speed_cap,
+            plan_signature,
+            schedule_sha256,
+            verify_plan_matches_baseline,
+        )
+
+        if not self._v105_enabled():
+            self._pact_place_v105_speed_amendment = {
+                "applied": False,
+                "reason": "environment marker is not V10.5",
+            }
+            return primitives
+        baseline = plan_signature(primitives)
+        baseline_schedule = schedule_sha256(primitives)
+        record = apply_initial_free_space_speed_cap(primitives)
+        amended = plan_signature(primitives)
+        record["baseline_vs_amended"] = verify_plan_matches_baseline(baseline, amended)
+        record["baseline_plan"] = baseline
+        record["baseline_schedule_sha256"] = baseline_schedule
+        record["marker_gated"] = True
+        record["schedule_gated"] = True
+        self._pact_place_v105_speed_amendment = record
+        return primitives
+
+    def _v105_assembly(self):
+        if self._pact_v105_assembly is None:
+            from pact_place_v105_geometry import POSE_OFFSETS_M, build_assembly
+
+            row = self._pact_manifest_row or {}
+            scene = getattr(self.task, "scene_params", {}) or {}
+            pose_id = row.get("pose_id") or scene.get("pact_v105_pose_id")
+            x = row.get("pact_v105_x_m")
+            r = row.get("pact_v105_r_m")
+            if pose_id is None or x is None or r is None:
+                return None
+            self._pact_v105_assembly = build_assembly(
+                float(x), float(r), POSE_OFFSETS_M[str(pose_id)], pose_id=str(pose_id)
+            )
+        return self._pact_v105_assembly
+
+    def _v105_pendant_geom_ids(self) -> list[int]:
+        if self._pact_v105_pendant_geom_ids is None:
+            from pact_place_v105_runtime import PENDANT_GEOM_PREFIX
+
+            model = self.task.env.current_model
+            ids = []
+            for geom_id in range(int(model.ngeom)):
+                name = str(model.geom(geom_id).name or "")
+                if name.startswith(PENDANT_GEOM_PREFIX):
+                    ids.append(int(geom_id))
+            self._pact_v105_pendant_geom_ids = ids
+        return list(self._pact_v105_pendant_geom_ids)
+
+    def _v105_probe_ids(self) -> list[int]:
+        if self._pact_v105_probe_ids is None:
+            from pact_place_v105_clearance import (
+                robot_collision_geom_ids,
+                target_collision_geom_ids,
+            )
+
+            model = self.task.env.current_model
+            self._pact_v105_probe_ids = list(
+                robot_collision_geom_ids(model)
+            ) + list(target_collision_geom_ids(self.task))
+        return list(self._pact_v105_probe_ids)
+
+    def _v105_frame_telemetry(self) -> dict[str, Any]:
+        from pact_place_v105_clearance import (
+            assembly_boxes,
+            frame_clearances,
+            geom_shape_cache,
+            pendant_contact_state,
+            risk_boxes,
+        )
+
+        model, data = self.task.env.current_model, self.task.env.current_data
+        assembly = self._v105_assembly()
+        if assembly is None:
+            return {"telemetry_error": "V10.5 row does not carry (x, r, pose_id)"}
+        if self._pact_v105_boxes is None:
+            self._pact_v105_boxes = assembly_boxes(assembly)
+            self._pact_v105_risk_boxes = risk_boxes(assembly)
+        probe = self._v105_probe_ids()
+        if self._pact_v105_shape_cache is None:
+            self._pact_v105_shape_cache = geom_shape_cache(model, probe)
+        report = frame_clearances(
+            model, data, self._pact_v105_boxes, probe, self._pact_v105_shape_cache
+        )
+        risk = frame_clearances(
+            model, data, self._pact_v105_risk_boxes, probe,
+            self._pact_v105_shape_cache,
+        )
+        contact = pendant_contact_state(
+            model, data, self._v105_pendant_geom_ids()
+        )
+        return {
+            "pendant_min_clearance_m": report["min_m"],
+            "pendant_per_component_m": report["per_component_m"],
+            "pendant_limiting": report["limiting"],
+            "lobe_stem_min_clearance_m": risk["min_m"],
+            "lobe_stem_limiting": risk["limiting"],
+            "pendant_contact": bool(contact["contact"]),
+            "pendant_robot_or_target_contact": bool(
+                contact["robot_or_target_contact"]
+            ),
+            "pendant_contact_pairs": contact["pairs"],
+            "pendant_contact_classes": contact["contact_classes"],
+            "n_pendant_contact_pairs": int(contact["n_pairs"]),
+            "pose_id": (self._pact_manifest_row or {}).get("pose_id"),
+            "scene_sha256": (self._pact_manifest_row or {}).get(
+                "pact_v105_scene_sha256"
+            ),
+        }
+
+    def _v105_frame_summary(self) -> dict[str, Any]:
+        frames = list(self._pact_place_v105_frames)
+        if not frames:
+            return {}
+        names: list[str] = []
+        for frame in frames:
+            for name in (frame.get("pendant_per_component_m") or {}):
+                if name not in names:
+                    names.append(name)
+        per_component = {}
+        for name in names:
+            values = [
+                float(frame["pendant_per_component_m"][name])
+                for frame in frames
+                if (frame.get("pendant_per_component_m") or {}).get(name) is not None
+            ]
+            per_component[name] = float(min(values)) if values else None
+        measured = [
+            f for f in frames if f.get("pendant_min_clearance_m") is not None
+        ]
+        risk_measured = [
+            f for f in frames if f.get("lobe_stem_min_clearance_m") is not None
+        ]
+        contact_frames = [f for f in frames if f.get("pendant_contact")]
+        robot_contact_frames = [
+            f for f in frames if f.get("pendant_robot_or_target_contact")
+        ]
+        worst = (
+            min(measured, key=lambda f: float(f["pendant_min_clearance_m"]))
+            if measured
+            else None
+        )
+        worst_risk = (
+            min(risk_measured, key=lambda f: float(f["lobe_stem_min_clearance_m"]))
+            if risk_measured
+            else None
+        )
+        speeds: list[dict[str, Any]] = []
+        seen = set()
+        for frame in frames:
+            key = (
+                frame.get("primitive_index"),
+                frame.get("segment_index"),
+                frame.get("segment_name"),
+                None
+                if frame.get("commanded_speed_m_s") is None
+                else round(float(frame["commanded_speed_m_s"]), 9),
+            )
+            if key in seen or key[3] is None:
+                continue
+            seen.add(key)
+            speeds.append(
+                {
+                    "primitive_index": key[0],
+                    "segment_index": key[1],
+                    "segment_name": key[2],
+                    "commanded_speed_m_s": key[3],
+                    "first_step": int(frame["step"]),
+                }
+            )
+        realized = [
+            float(f["realized_tcp_speed_m_s"])
+            for f in frames
+            if f.get("realized_tcp_speed_m_s") is not None
+        ]
+        return {
+            "schema_version": "pact_place_v105_frame_telemetry_v1",
+            "n_frames": len(frames),
+            "n_frames_measured": len(measured),
+            "min_clearance_m": (
+                float(worst["pendant_min_clearance_m"]) if worst else None
+            ),
+            "min_lobe_stem_clearance_m": (
+                float(worst_risk["lobe_stem_min_clearance_m"]) if worst_risk else None
+            ),
+            "min_clearance_witness": (
+                {
+                    "step": int(worst["step"]),
+                    "policy_phase": worst.get("policy_phase"),
+                    "segment_name": worst.get("segment_name"),
+                    "limiting": worst.get("pendant_limiting"),
+                    "target_held": worst.get("target_held"),
+                }
+                if worst
+                else None
+            ),
+            "min_lobe_stem_witness": (
+                {
+                    "step": int(worst_risk["step"]),
+                    "policy_phase": worst_risk.get("policy_phase"),
+                    "segment_name": worst_risk.get("segment_name"),
+                    "limiting": worst_risk.get("lobe_stem_limiting"),
+                    "target_held": worst_risk.get("target_held"),
+                }
+                if worst_risk
+                else None
+            ),
+            "per_component_min_clearance_m": per_component,
+            "pendant_contact_frames": len(contact_frames),
+            "pendant_robot_or_target_contact_frames": len(robot_contact_frames),
+            "first_pendant_contact_step": (
+                int(contact_frames[0]["step"]) if contact_frames else None
+            ),
+            "first_pendant_contact_pairs": (
+                contact_frames[0].get("pendant_contact_pairs")
+                if contact_frames
+                else None
+            ),
+            "segment_speeds": speeds,
+            "max_realized_tcp_speed_m_s": max(realized) if realized else None,
+            "pose_id": frames[0].get("pose_id"),
+            "scene_sha256": frames[0].get("scene_sha256"),
+        }
+
+    def _v104_frame_telemetry(self) -> dict[str, Any]:
+        from pact_place_v104_clearance import assembly_boxes, frame_clearances, geom_shape_cache
+        from pact_place_v104_geometry import production_assembly
+        from pact_place_v104_runtime import pendant_contact_state
+
+        model, data = self.task.env.current_model, self.task.env.current_data
+        if self._pact_v104_boxes is None:
+            self._pact_v104_boxes = assembly_boxes(production_assembly())
+        probe = self._v104_probe_ids()
+        if self._pact_v104_shape_cache is None:
+            self._pact_v104_shape_cache = geom_shape_cache(model, probe)
+        report = frame_clearances(
+            model, data, self._pact_v104_boxes, probe, self._pact_v104_shape_cache
+        )
+        contact = pendant_contact_state(model, data, self._v104_pendant_geom_ids())
+        return {
+            "pendant_min_clearance_m": report["min_m"],
+            "pendant_per_component_m": report["per_component_m"],
+            "pendant_limiting": report["limiting"],
+            "pendant_contact": bool(contact["contact"]),
+            "pendant_contact_pairs": contact["pairs"],
+            "n_pendant_contact_pairs": int(contact["n_pairs"]),
+        }
+
+    def _v104_frame_summary(self) -> dict[str, Any]:
+        frames = list(self._pact_place_v104_frames)
+        if not frames:
+            return {}
+        names: list[str] = []
+        for frame in frames:
+            for name in (frame.get("pendant_per_component_m") or {}):
+                if name not in names:
+                    names.append(name)
+        per_component = {}
+        for name in names:
+            values = [
+                float(frame["pendant_per_component_m"][name])
+                for frame in frames
+                if (frame.get("pendant_per_component_m") or {}).get(name) is not None
+            ]
+            per_component[name] = float(min(values)) if values else None
+        measured = [f for f in frames if f.get("pendant_min_clearance_m") is not None]
+        contact_frames = [f for f in frames if f.get("pendant_contact")]
+        worst = min(measured, key=lambda f: float(f["pendant_min_clearance_m"])) if measured else None
+        speeds: list[dict[str, Any]] = []
+        seen = set()
+        for frame in frames:
+            key = (
+                frame.get("primitive_index"),
+                frame.get("segment_index"),
+                frame.get("segment_name"),
+                None if frame.get("commanded_speed_m_s") is None
+                else round(float(frame["commanded_speed_m_s"]), 9),
+            )
+            if key in seen or key[3] is None:
+                continue
+            seen.add(key)
+            speeds.append(
+                {
+                    "primitive_index": key[0],
+                    "segment_index": key[1],
+                    "segment_name": key[2],
+                    "commanded_speed_m_s": key[3],
+                    "first_step": int(frame["step"]),
+                }
+            )
+        return {
+            "schema_version": "pact_place_v104_frame_telemetry_v1",
+            "n_frames": len(frames),
+            "n_frames_measured": len(measured),
+            "min_clearance_m": (
+                float(worst["pendant_min_clearance_m"]) if worst else None
+            ),
+            "min_clearance_witness": (
+                {
+                    "step": int(worst["step"]),
+                    "policy_phase": worst.get("policy_phase"),
+                    "segment_name": worst.get("segment_name"),
+                    "limiting": worst.get("pendant_limiting"),
+                    "target_held": worst.get("target_held"),
+                }
+                if worst
+                else None
+            ),
+            "per_component_min_clearance_m": per_component,
+            "pendant_contact_frames": len(contact_frames),
+            "first_pendant_contact_step": (
+                int(contact_frames[0]["step"]) if contact_frames else None
+            ),
+            "first_pendant_contact_pairs": (
+                contact_frames[0].get("pendant_contact_pairs") if contact_frames else None
+            ),
+            "segment_speeds": speeds,
+            "max_realized_tcp_speed_m_s": (
+                float(max(
+                    float(f["realized_tcp_speed_m_s"]) for f in frames
+                    if f.get("realized_tcp_speed_m_s") is not None
+                ))
+                if any(f.get("realized_tcp_speed_m_s") is not None for f in frames)
+                else None
+            ),
+            "telemetry_errors": [
+                {"step": int(f["step"]), "error": f["telemetry_error"]}
+                for f in frames if f.get("telemetry_error")
+            ],
+        }
+
     def _record_place_trajectory_step(self) -> None:
         tcp_pos = None
         try:
@@ -4651,11 +6741,122 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             tcp_pos = list(map(float, tcp[:3, 3]))
         except Exception:
             tcp_pos = None
+        sim_time_s = float(self.task.env.current_data.time)
+        segment = None
+        try:
+            segment = self._current_move_segment()
+        except Exception:
+            segment = None
+        realized_step_m = None
+        realized_speed_m_s = None
+        if tcp_pos is not None:
+            current = np.asarray(tcp_pos, dtype=float)
+            if self._pact_place_last_tcp_m is not None:
+                realized_step_m = float(
+                    np.linalg.norm(current - self._pact_place_last_tcp_m)
+                )
+                if self._pact_place_last_sim_time_s is not None:
+                    dt = sim_time_s - float(self._pact_place_last_sim_time_s)
+                    if dt > 1e-9:
+                        realized_speed_m_s = float(realized_step_m / dt)
+            self._pact_place_last_tcp_m = current
+        self._pact_place_last_sim_time_s = sim_time_s
+        frame_extra: dict[str, Any] = {
+            "segment_name": None if segment is None else str(segment.name),
+            "commanded_speed_m_s": None if segment is None else float(segment.speed),
+            "realized_tcp_displacement_m": realized_step_m,
+            "realized_tcp_speed_m_s": realized_speed_m_s,
+        }
+        if self._v104_enabled():
+            primitive_index, segment_index, segment, holding = (
+                self._v104_current_segment()
+            )
+            frame_extra["primitive_index"] = primitive_index
+            frame_extra["segment_index"] = segment_index
+            frame_extra["target_held"] = holding
+            if segment is not None:
+                frame_extra["segment_name"] = str(segment.name)
+                frame_extra["commanded_speed_m_s"] = float(segment.speed)
+            frame_extra["traversal_phase"] = self._traversal_phase(str(self.get_phase()))
+            try:
+                frame_extra.update(self._v104_frame_telemetry())
+            except Exception as error:  # noqa: BLE001 - telemetry must not be silent
+                frame_extra["telemetry_error"] = f"{type(error).__name__}: {error}"
+            self._pact_place_v104_frames.append(
+                {
+                    "step": int(self._pact_place_control_step),
+                    "sim_time_s": sim_time_s,
+                    "policy_phase": str(self.get_phase()),
+                    **frame_extra,
+                }
+            )
+        if self._v106_enabled():
+            primitive_index, segment_index, segment, holding = (
+                self._v104_current_segment()
+            )
+            frame_extra["primitive_index"] = primitive_index
+            frame_extra["segment_index"] = segment_index
+            frame_extra["target_held"] = holding
+            if segment is not None:
+                frame_extra["segment_name"] = str(segment.name)
+                frame_extra["commanded_speed_m_s"] = float(segment.speed)
+            frame_extra["traversal_phase"] = self._traversal_phase(
+                str(self.get_phase())
+            )
+            try:
+                frame_extra.update(self._v106_frame_telemetry())
+            except Exception as error:  # noqa: BLE001 - telemetry must not be silent
+                frame_extra["telemetry_error"] = f"{type(error).__name__}: {error}"
+            self._pact_place_v106_frames.append({
+                "step": int(self._pact_place_control_step),
+                "sim_time_s": sim_time_s,
+                "policy_phase": str(self.get_phase()),
+                **frame_extra,
+            })
+        if self._v105_enabled():
+            primitive_index, segment_index, segment, holding = (
+                self._v104_current_segment()
+            )
+            frame_extra["primitive_index"] = primitive_index
+            frame_extra["segment_index"] = segment_index
+            frame_extra["target_held"] = holding
+            if segment is not None:
+                frame_extra["segment_name"] = str(segment.name)
+                frame_extra["commanded_speed_m_s"] = float(segment.speed)
+            frame_extra["traversal_phase"] = self._traversal_phase(
+                str(self.get_phase())
+            )
+            try:
+                frame_extra.update(self._v105_frame_telemetry())
+            except Exception as error:  # noqa: BLE001 - telemetry must not be silent
+                frame_extra["telemetry_error"] = f"{type(error).__name__}: {error}"
+            self._pact_place_v105_frames.append(
+                {
+                    "step": int(self._pact_place_control_step),
+                    "sim_time_s": sim_time_s,
+                    "policy_phase": str(self.get_phase()),
+                    **frame_extra,
+                }
+            )
+        if self._v102_enabled():
+            try:
+                frame_extra.update(self._v102_frame_telemetry())
+            except Exception as error:  # noqa: BLE001 - telemetry must not be silent
+                frame_extra["telemetry_error"] = f"{type(error).__name__}: {error}"
+            self._pact_place_v102_frames.append(
+                {
+                    "step": int(self._pact_place_control_step),
+                    "sim_time_s": sim_time_s,
+                    "policy_phase": str(self.get_phase()),
+                    **frame_extra,
+                }
+            )
         self._pact_place_trajectory.append(
             {
                 "step": int(self._pact_place_control_step),
-                "sim_time_s": float(self.task.env.current_data.time),
+                "sim_time_s": sim_time_s,
                 "policy_phase": str(self.get_phase()),
+                **frame_extra,
                 "tcp_position_m": tcp_pos,
                 "object_position_m": (
                     None
@@ -4673,6 +6874,97 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 ],
             }
         )
+
+    def _v102_frame_summary(self) -> dict[str, Any]:
+        """Aggregate the per-policy-frame V10.2 pendant telemetry."""
+        from pact_place_v102_raised_pendant_contract import MIN_PENDANT_CLEARANCE_M
+
+        frames = list(self._pact_place_v102_frames)
+        if not frames:
+            return {}
+        component_names: list[str] = []
+        for frame in frames:
+            for name in (frame.get("component_clearance_m") or {}):
+                if name not in component_names:
+                    component_names.append(name)
+        per_component: dict[str, float | None] = {}
+        for name in component_names:
+            values = [
+                float(frame["component_clearance_m"][name])
+                for frame in frames
+                if (frame.get("component_clearance_m") or {}).get(name) is not None
+            ]
+            per_component[name] = float(min(values)) if values else None
+        measured = [
+            frame for frame in frames if frame.get("min_clearance_m") is not None
+        ]
+        contact_frames = [frame for frame in frames if frame.get("pendant_contact")]
+        below = [
+            frame
+            for frame in measured
+            if float(frame["min_clearance_m"]) < MIN_PENDANT_CLEARANCE_M - 1e-12
+        ]
+        speeds: list[dict[str, Any]] = []
+        seen: set[tuple[str, float]] = set()
+        for frame in frames:
+            name = frame.get("segment_name")
+            speed = frame.get("commanded_speed_m_s")
+            if name is None or speed is None:
+                continue
+            key = (str(name), round(float(speed), 9))
+            if key in seen:
+                continue
+            seen.add(key)
+            speeds.append(
+                {
+                    "name": str(name),
+                    "commanded_speed_m_s": float(speed),
+                    "first_step": int(frame["step"]),
+                }
+            )
+        realized = [
+            float(frame["realized_tcp_speed_m_s"])
+            for frame in frames
+            if frame.get("realized_tcp_speed_m_s") is not None
+        ]
+        return {
+            "schema_version": "pact_place_v102_frame_telemetry_v1",
+            "n_frames": len(frames),
+            "n_frames_measured": len(measured),
+            "min_clearance_m": (
+                float(min(float(frame["min_clearance_m"]) for frame in measured))
+                if measured
+                else None
+            ),
+            "min_clearance_floor_m": float(MIN_PENDANT_CLEARANCE_M),
+            "per_component_min_clearance_m": per_component,
+            "live_pendant_contact_frames": len(contact_frames),
+            "first_pendant_contact_step": (
+                int(contact_frames[0]["step"]) if contact_frames else None
+            ),
+            "first_pendant_contact_witness": (
+                contact_frames[0].get("contact_pairs") if contact_frames else None
+            ),
+            "frames_below_clearance_floor": len(below),
+            "first_below_floor_step": int(below[0]["step"]) if below else None,
+            "first_below_floor_witness": (
+                {
+                    "step": int(below[0]["step"]),
+                    "policy_phase": below[0].get("policy_phase"),
+                    "segment_name": below[0].get("segment_name"),
+                    "component_clearance_m": below[0].get("component_clearance_m"),
+                }
+                if below
+                else None
+            ),
+            "segment_speeds": speeds,
+            "max_realized_tcp_speed_m_s": float(max(realized)) if realized else None,
+            "telemetry_errors": [
+                {"step": int(frame["step"]), "error": frame["telemetry_error"]}
+                for frame in frames
+                if frame.get("telemetry_error")
+            ],
+        }
 
     def _endpoint_scalars(self) -> dict[str, Any]:
         end = self._pickup_final_position
@@ -4814,11 +7106,60 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                 "bow_fallback_taken": bool(
                     self._pact_place_bow_diagnostics["outbound"]["bow_fallback_taken"]
                 ),
+                "pendant_bow": {
+                    "inbound": dict(
+                        self._pact_place_bow_diagnostics.get(
+                            "inbound_ceiling_fixture", self._empty_bow_record()
+                        )
+                    ),
+                    "outbound": dict(
+                        self._pact_place_bow_diagnostics.get(
+                            "outbound_ceiling_fixture", self._empty_bow_record()
+                        )
+                    ),
+                },
+                "pendant_v99": {
+                    "inbound": dict(
+                        (self._pact_place_v99_route or {}).get(
+                            "inbound_pendant", self._v99_empty_route_record()
+                        )
+                    ),
+                    "outbound": dict(
+                        (self._pact_place_v99_route or {}).get(
+                            "outbound_pendant", self._v99_empty_route_record()
+                        )
+                    ),
+                },
+                "pendant_v10": {
+                    "inbound": dict(
+                        (self._pact_place_v10_route or {}).get(
+                            "inbound_pendant", self._v99_empty_route_record()
+                        )
+                    ),
+                    "outbound": dict(
+                        (self._pact_place_v10_route or {}).get(
+                            "outbound_pendant", self._v99_empty_route_record()
+                        )
+                    ),
+                },
                 "terminal_tracking": terminal_tracking,
                 "terminal_robot_environment_contacts": place_environment_contact_pairs(
                     self.task.env
                 ),
                 "endpoint_scalars": endpoint_scalars,
+                "pendant_frame_telemetry": self._v102_frame_summary(),
+                "pact_v104_frame_telemetry": self._v104_frame_summary(),
+                "pact_v104_speed_amendment": dict(
+                    self._pact_place_v104_speed_amendment or {}
+                ),
+                "pact_v106_frame_telemetry": self._v106_frame_summary(),
+                "pact_v106_speed_amendment": dict(
+                    self._pact_place_v106_speed_amendment or {}
+                ),
+                "pact_v105_frame_telemetry": self._v105_frame_summary(),
+                "pact_v105_speed_amendment": dict(
+                    self._pact_place_v105_speed_amendment or {}
+                ),
                 "trajectory": list(self._pact_place_trajectory),
                 "clutter_stability_events": list(
                     self._pact_clutter_stability_events

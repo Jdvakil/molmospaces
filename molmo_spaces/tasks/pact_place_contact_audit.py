@@ -19,9 +19,11 @@ CONTACT_CLASSES = (
     "other_environment",
     "place_receptacle",
     "clutter",
+    "mounted_fixture",
 )
 TRAVERSAL_PHASES = ("inbound", "outbound", "placement", "other")
 PLACE_ROOT_PREFIX = "place_receptacle"
+MOUNT_FIXTURE_BODY_PREFIX = "pact_clutter_mount_"
 CLUTTER_BODY_PREFIX = "pact_clutter_"
 # Receptacle contact is expected while putting the cup down. preplace is mapped
 # into this bucket by PactPlaceCorridorPolicy._traversal_phase.
@@ -44,6 +46,10 @@ def classify_contact(pair: dict[str, Any]) -> str:
         str(pair.get(key, ""))
         for key in ("geom1", "geom2", "body1", "body2", "root1", "root2")
     )
+    # Mounted fixtures share the pact_clutter_ namespace (pact_clutter_mount_*)
+    # but must not be scored as bench clutter. Test the mount prefix first.
+    if MOUNT_FIXTURE_BODY_PREFIX in blob:
+        return "mounted_fixture"
     # Clutter before cavity_obj_ / grasp_target. The shared classifier tests
     # cavity_obj_ first and would silently exempt any clutter spawned under
     # that namespace; these bodies are named pact_clutter_* so this branch
@@ -185,15 +191,20 @@ class PactPlaceContactAudit:
             self._pair_totals["hazard_bar"]
             + self._pair_totals["other_environment"]
             + self._pair_totals["clutter"]
+            + self._pair_totals["mounted_fixture"]
         )
         return {
-            "contact_taxonomy_version": "pact_place_robot_environment_v2",
+            "contact_taxonomy_version": "pact_place_robot_environment_v3",
             "legacy_contact_classes_unchanged": [
                 "grasp_target",
                 "hazard_bar",
                 "other_environment",
             ],
-            "added_contact_classes": ["place_receptacle", "clutter"],
+            "added_contact_classes": [
+                "place_receptacle",
+                "clutter",
+                "mounted_fixture",
+            ],
             "sampling_level": "every_2ms_control_physics_step_plus_episode_boundaries",
             "sample_count": len(self._seen_times),
             "contact_class_totals": dict(self._pair_totals),

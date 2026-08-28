@@ -1,0 +1,22 @@
+<mujoco model="pact_place_corridor_v10">
+  <!-- V5 shell is included verbatim. V10 adds one compound-pendant mocap body. -->
+  <include file="pact_place_corridor_v5.xml"/>
+  <worldbody>
+    <body name="pact_clutter_mount_v10" mocap="true" pos="4.0 4.0 -2.0">
+      <geom name="pact_clutter_mount_v10_lobe_0_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.43 0.44 0.47 1"/>
+      <geom name="pact_clutter_mount_v10_lobe_1_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.43 0.44 0.47 1"/>
+      <geom name="pact_clutter_mount_v10_lobe_2_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.43 0.44 0.47 1"/>
+      <geom name="pact_clutter_mount_v10_stem_0_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.50 0.51 0.53 1"/>
+      <geom name="pact_clutter_mount_v10_stem_1_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.50 0.51 0.53 1"/>
+      <geom name="pact_clutter_mount_v10_stem_2_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.50 0.51 0.53 1"/>
+      <geom name="pact_clutter_mount_v10_crossbar_g" class="hood" type="box"
+            pos="0.001 0 0" size="0.001 0.001 0.001" rgba="0.36 0.37 0.40 1"/>
+    </body>
+  </worldbody>
+</mujoco>

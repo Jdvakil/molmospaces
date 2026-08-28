@@ -1,0 +1,4 @@
+<mujoco model="pact_place_corridor_v10_6_no_pendant">
+  <!-- V10.6 no-pendant counterfactual: the frozen V5 shell only. -->
+  <include file="pact_place_corridor_v5.xml"/>
+</mujoco>
