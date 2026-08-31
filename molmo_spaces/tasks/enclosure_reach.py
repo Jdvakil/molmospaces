@@ -3233,6 +3233,17 @@ PACT_PLACE_V106_ENVIRONMENT_VERSION = (
 )
 
 
+PACT_PLACE_V1010_ENVIRONMENT_VERSION = "pact_place_corridor_v10_10_four_object"
+# V10.10 is the V10.6 lane with four clutter slots parked, not a new lane. Every
+# gate that switches on the V10.6 marker -- the speed amendment, the frame
+# telemetry, the expert routing -- must therefore accept it, or V10.10 would
+# silently run different speeds and emit no telemetry while looking healthy.
+PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS = (
+    PACT_PLACE_V106_ENVIRONMENT_VERSION,
+    PACT_PLACE_V1010_ENVIRONMENT_VERSION,
+)
+
+
 class PactPlaceCorridorV106Sampler(PactPlaceCorridorV93Sampler):
     """V10.5's sampler behaviour with the V10.6 asymmetric marker.
 
@@ -3290,6 +3301,129 @@ class PactPlaceCorridorV106Sampler(PactPlaceCorridorV93Sampler):
                     f"{observed} != {expected}"
                 )
         return super().sample_task(*args, **kwargs)
+
+
+class PactPlaceCorridorV1010FourObjectSampler(PactPlaceCorridorV106Sampler):
+    """V10.7 environment with exactly four household objects active.
+
+    Everything the V10.6/V10.7 lane defines is reused byte-for-byte: the three
+    compiled static-pendant scenes and their hashes, routes, speeds, target
+    distribution, the four layout families, two intrusion sides, three pendant
+    poses, cameras, the 40-sensor proximity suite and the contact taxonomy.
+
+    The single change is which clutter slots are live. The full eight-asset
+    palette stays compiled, so observations and checkpoints remain
+    shape-compatible; four slots are simply left out of the layout. The
+    inherited ``_apply_theta`` already parks every compiled body whose slot is
+    absent from the layout at its own ``park_m``, so parking needs no new
+    mechanism and no new failure mode.
+
+    Active   01 Soap_Bottle_30 (outbound vessel), 06 Soap_Bottle_11 (inbound
+             vessel), 03 Plate_10, 04 Plate_22.
+    Parked   00 Candle_2, 02 Mug_2, 05 (can), 07 Candle_1.
+
+    Both route-bearing vessels stay active, so the corridor the task is about is
+    unchanged; what is removed is decor.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v10_10_four_object"
+    ACTIVE_CLUTTER_SLOTS = ("01", "03", "04", "06")
+    INACTIVE_CLUTTER_SLOTS = ("00", "02", "05", "07")
+    ACTIVE_CLUTTER_COUNT = 4
+    EXPECTED_ACTIVE_UIDS = {
+        "01": "Soap_Bottle_30", "03": "Plate_10",
+        "04": "Plate_22", "06": "Soap_Bottle_11",
+    }
+
+    @classmethod
+    def four_object_identity_sha256(cls, objects) -> str:
+        """Which four objects are active -- stable across episodes.
+
+        The positional hash below changes every episode because V9.3 applies
+        per-episode clutter jitter, so it cannot be a row binding computed
+        before sampling. Identity can.
+        """
+        import hashlib
+        import json as _json
+
+        payload = [
+            {"palette_slot": str(o["palette_slot"]), "uid": str(o["uid"]),
+             "role": str(o.get("role", ""))}
+            for o in sorted(objects, key=lambda x: str(x["palette_slot"]))
+        ]
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @classmethod
+    def four_object_layout_sha256(cls, objects) -> str:
+        import hashlib
+        import json as _json
+
+        payload = [
+            {
+                "palette_slot": str(o["palette_slot"]), "uid": str(o["uid"]),
+                "role": str(o.get("role", "")),
+                "center_m": [float(v) for v in o["center_m"]],
+                "quat_wxyz": [float(v) for v in o["quat_wxyz"]],
+            }
+            for o in sorted(objects, key=lambda x: str(x["palette_slot"]))
+        ]
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def _layout(self):
+        import copy
+
+        layout = copy.deepcopy(super()._layout())
+        by_slot = {str(o["palette_slot"]): o for o in layout["objects"]}
+        missing = [s for s in self.ACTIVE_CLUTTER_SLOTS if s not in by_slot]
+        if missing:
+            raise ValueError(f"V10.10 active slots absent from the layout: {missing}")
+        for slot, uid in self.EXPECTED_ACTIVE_UIDS.items():
+            if str(by_slot[slot]["uid"]) != uid:
+                raise ValueError(
+                    f"V10.10 slot {slot} carries {by_slot[slot]['uid']!r}, "
+                    f"expected {uid!r}")
+        active = [by_slot[s] for s in self.ACTIVE_CLUTTER_SLOTS]
+        if len(active) != self.ACTIVE_CLUTTER_COUNT:
+            raise ValueError(f"V10.10 activated {len(active)} slots, expected 4")
+        parked = sorted(set(by_slot) - set(self.ACTIVE_CLUTTER_SLOTS))
+        if parked != sorted(self.INACTIVE_CLUTTER_SLOTS):
+            raise ValueError(f"V10.10 parked slots {parked} != "
+                             f"{sorted(self.INACTIVE_CLUTTER_SLOTS)}")
+        layout["objects"] = active
+        layout["active_clutter_slots"] = list(self.ACTIVE_CLUTTER_SLOTS)
+        layout["inactive_clutter_slots"] = list(self.INACTIVE_CLUTTER_SLOTS)
+        layout["active_clutter_count"] = self.ACTIVE_CLUTTER_COUNT
+        layout["active_clutter_uids"] = {
+            str(o["palette_slot"]): str(o["uid"]) for o in active}
+        layout["four_object_identity_sha256"] = self.four_object_identity_sha256(active)
+        layout["four_object_layout_sha256"] = self.four_object_layout_sha256(active)
+        layout["layout_id"] = f"{layout['layout_id']}_v1010_4obj"
+        return layout
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        layout = th.get("pact_clutter_layout") or {}
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v1010_active_clutter_slots"] = list(self.ACTIVE_CLUTTER_SLOTS)
+        th["pact_v1010_inactive_clutter_slots"] = list(self.INACTIVE_CLUTTER_SLOTS)
+        th["pact_v1010_active_clutter_count"] = self.ACTIVE_CLUTTER_COUNT
+        th["pact_v1010_active_clutter_uids"] = layout.get("active_clutter_uids")
+        th["pact_v1010_identity_sha256"] = layout.get("four_object_identity_sha256")
+        th["pact_v1010_layout_sha256"] = layout.get("four_object_layout_sha256")
+        th["pact_v1010_sampler_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        active = list(getattr(self, "_pact_active_clutter_names", []))
+        if len(active) != self.ACTIVE_CLUTTER_COUNT:
+            raise ValueError(
+                f"V10.10 expected {self.ACTIVE_CLUTTER_COUNT} active clutter bodies, "
+                f"got {len(active)}: {active}")
 
 
 PACT_PLACE_V10_LANE_ENVIRONMENT_VERSIONS = (
@@ -3630,7 +3764,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
             PACT_PLACE_V10_ENVIRONMENT_VERSION,
             PACT_PLACE_V102_ENVIRONMENT_VERSION,
             PACT_PLACE_V105_ENVIRONMENT_VERSION,
-            PACT_PLACE_V106_ENVIRONMENT_VERSION,
+            *PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS,
         }
 
     def _environment_version(self) -> str:
@@ -3653,7 +3787,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         return self._environment_version() == PACT_PLACE_V105_ENVIRONMENT_VERSION
 
     def _v106_enabled(self) -> bool:
-        return self._environment_version() == PACT_PLACE_V106_ENVIRONMENT_VERSION
+        return self._environment_version() in PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS
 
     def _v102_enabled(self) -> bool:
         return self._environment_version() == PACT_PLACE_V102_ENVIRONMENT_VERSION
@@ -5350,7 +5484,7 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
                     PACT_PLACE_V10_ENVIRONMENT_VERSION,
                     PACT_PLACE_V102_ENVIRONMENT_VERSION,
                     PACT_PLACE_V105_ENVIRONMENT_VERSION,
-                    PACT_PLACE_V106_ENVIRONMENT_VERSION,
+                    *PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS,
                 }
                 else "outbound_vessel"
             )
