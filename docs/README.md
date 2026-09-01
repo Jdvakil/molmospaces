@@ -22,6 +22,7 @@ Some project documentation is located within the codebase. Here is an index of a
 ## Data & Processing
 
 - [Data generation](../scripts/datagen/README.md)
+- [PACT pick-and-place environments](../docs/pact_place_environments.md)
 - [Data format](../docs/data_format.md)
 - [Data postprocessing](../docs/data_processing.md)
 

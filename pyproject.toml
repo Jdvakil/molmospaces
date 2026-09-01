@@ -137,6 +137,9 @@ exclude = ["molmo_spaces_isaac*", "molmo_spaces_maniskill*"]
     "resources/asset_id_to_object_type.json",
     "resources/material_to_textures.json",
     "resources/base_scene.xml",
+    "data_generation/custom_scenes/pact_place_corridor_v*.xml",
+    "data_generation/custom_scenes/pact_place_corridor_v*_metadata.json",
+    "data_generation/pact_place/*.json",
 ]
 
 [tool.ruff]

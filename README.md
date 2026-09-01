@@ -223,6 +223,11 @@ Example experiment configs can be found in e.g. `molmo_spaces/data_generation/co
 python molmo_spaces/data_generation/main.py FrankaPickOmniCamConfig
 ```
 
+The PACT place release includes ready-to-run configs for experiment V5, the
+V9.5 real-clutter lineage, and the V10.10 four-object static-pendant
+environment. See [PACT pick-and-place environments](docs/pact_place_environments.md)
+for the exact version mapping, contents, and commands.
+
 
 ## Teleop Input
 
