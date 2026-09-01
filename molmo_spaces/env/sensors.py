@@ -1128,8 +1128,15 @@ def get_core_sensors(exp_config):
         camera_name = camera_spec.name
 
         # Camera parameter sensor (always recorded so we can map depth to world later)
+        parameter_resolution = (
+            (8, 8)
+            if getattr(camera_spec, "is_proximity_sensor", False)
+            else exp_config.camera_config.img_resolution
+        )
         cam_params = CameraParameterSensor(
-            camera_name=camera_name, uuid=f"sensor_param_{camera_name}"
+            camera_name=camera_name,
+            uuid=f"sensor_param_{camera_name}",
+            img_resolution=parameter_resolution,
         )
         sensors.append(cam_params)
 
