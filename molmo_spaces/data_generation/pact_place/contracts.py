@@ -87,6 +87,59 @@ V1010_SCENE_BY_POSE = {
 }
 
 
+V1011C_ENVIRONMENT_VERSION = "pact_place_corridor_v10_11c_33pct_taller_primitives"
+V1011D_ENVIRONMENT_VERSION = "pact_place_corridor_v10_11d_randomized_clutter"
+V1011_ACTIVE_SLOTS = ("01", "03", "04", "06", "08", "09")
+V1011_INACTIVE_SLOTS = ("00", "02", "05", "07")
+V1011_PRIMITIVE_SLOTS = ("01", "08", "09")
+V1011_MESH_SLOTS = ("03", "04", "06")
+V1011_NEAR_TARGET_SLOTS = ("08", "09")
+# Slots 08/09 hold a valid metadata box before the sampler's single target draw
+# replaces them with a target-relative placement.
+V1011_NEAR_TARGET_PLACEHOLDER_XY_M = {"08": (0.90, -0.12), "09": (1.08, 0.12)}
+# V10.11c heights: V10.11b's three primitive heights scaled by 1.33. XY
+# footprints are identical to V10.11a/b.
+V1011_PRIMITIVES = {
+    "01": {
+        "uid": "pact_primitive_cylinder_01",
+        "role": "outbound_vessel",
+        "category": "vase",
+        "dimensions_m": [0.090, 0.090, 0.32585],
+        "primitive": {
+            "shape": "cylinder",
+            "radius_m": 0.045,
+            "height_m": 0.32585,
+            "density_kg_m3": 1000.0,
+            "rgba": [0.78, 0.56, 0.28, 1.0],
+        },
+    },
+    "08": {
+        "uid": "pact_primitive_cylinder_08",
+        "role": "decor",
+        "category": "primitive_cylinder",
+        "dimensions_m": [0.070, 0.070, 0.23940],
+        "primitive": {
+            "shape": "cylinder",
+            "radius_m": 0.035,
+            "height_m": 0.23940,
+            "density_kg_m3": 1000.0,
+            "rgba": [0.26, 0.57, 0.82, 1.0],
+        },
+    },
+    "09": {
+        "uid": "pact_primitive_box_09",
+        "role": "decor",
+        "category": "primitive_box",
+        "dimensions_m": [0.070, 0.070, 0.23940],
+        "primitive": {
+            "shape": "box",
+            "size_m": [0.070, 0.070, 0.23940],
+            "density_kg_m3": 1000.0,
+            "rgba": [0.62, 0.36, 0.72, 1.0],
+        },
+    },
+}
+
 def load_v95_palette(path: Path = PALETTE_SOURCE_PATH) -> dict[str, Any]:
     """Return the sealed eight-object V9.5 palette."""
     document = json.loads(path.read_text())
@@ -479,6 +532,154 @@ def build_v1010_manifest_row(family_id: str, intrusion_side: str, pose_id: str) 
     return row
 
 
+def v1011_cell(index: int) -> tuple[str, str, str]:
+    return v1010_cell(index)
+
+
+def _v1011_primitive_palette_item(slot: str) -> dict[str, Any]:
+    source = copy.deepcopy(V1011_PRIMITIVES[slot])
+    dimensions = [float(value) for value in source["dimensions_m"]]
+    return {
+        "slot": slot,
+        "slot_class": "prop",
+        "role": source["role"],
+        "uid": source["uid"],
+        "category": source["category"],
+        "dimensions_m": dimensions,
+        "annotation_dimensions_m": list(dimensions),
+        "half_m": [value / 2.0 for value in dimensions],
+        "max_dimension_m": max(dimensions),
+        "support": "shelf_standing",
+        "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "body_prefix": f"pact_clutter_{slot}/",
+        "primitive": source["primitive"],
+    }
+
+
+def _build_v1011_manifest_row(
+    family_id: str,
+    intrusion_side: str,
+    pose_id: str,
+    *,
+    environment_version: str,
+    sampler_class: str,
+) -> dict[str, Any]:
+    """The shared V10.11 row: six live bodies, three of them primitives.
+
+    Slot 01 keeps the V9.5 route-blocker XY and becomes a primitive cylinder;
+    slots 08/09 are new near-target primitives. The route predicates are
+    recomputed from the primitive's own half extents rather than inheriting
+    V9.5's numbers, because the route-bearing body changed shape.
+    """
+    if pose_id not in POSE_IDS:
+        raise ValueError(f"unknown pendant pose {pose_id!r}")
+    row = build_v1010_manifest_row(family_id, intrusion_side, pose_id)
+    for key in (
+        "pact_v1010_active_clutter_slots",
+        "pact_v1010_inactive_clutter_slots",
+        "pact_v1010_active_clutter_count",
+        "pact_v1010_active_clutter_uids",
+        "pact_v1010_identity_sha256",
+    ):
+        row.pop(key, None)
+
+    palette = {str(item["slot"]): item for item in row["pact_clutter_palette"]}
+    for slot in V1011_PRIMITIVE_SLOTS:
+        palette[slot] = _v1011_primitive_palette_item(slot)
+    row["pact_clutter_palette"] = [palette[key] for key in sorted(palette)]
+
+    layout = row["pact_clutter_layout"]
+    objects = {str(item["palette_slot"]): item for item in layout["objects"]}
+    for slot in V1011_PRIMITIVE_SLOTS:
+        source = palette[slot]
+        half = list(source["half_m"])
+        if slot == "01":
+            centre_xy = list(objects["01"]["center_m"][:2])
+        else:
+            centre_xy = list(V1011_NEAR_TARGET_PLACEHOLDER_XY_M[slot])
+        objects[slot] = {
+            "palette_slot": slot,
+            "uid": source["uid"],
+            "role": source["role"],
+            "category": source["category"],
+            "support": "bench_standing",
+            "center_m": [centre_xy[0], centre_xy[1], 0.72 + half[2]],
+            "half_m": half,
+            "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "size_class": "large" if slot == "01" else "medium",
+            "primitive": copy.deepcopy(source["primitive"]),
+            "target_relative_placeholder": slot in V1011_NEAR_TARGET_SLOTS,
+        }
+    layout["objects"] = [objects[key] for key in sorted(objects)]
+    layout["route_blocker_center_xy_m"] = list(objects["01"]["center_m"][:2])
+    layout["nominal_route_metrics"] = route_blocker_metrics(layout)
+    layout["panel_corridor_metrics"] = panel_corridor_metrics(layout)
+    if not layout["nominal_route_metrics"]["detour_admitted"]:
+        raise ValueError("V10.11 primitive vessel does not admit the nominal detour")
+    if not layout["panel_corridor_metrics"]["detour_admitted"]:
+        raise ValueError("V10.11 primitive vessel closes the panel corridor")
+
+    row.update(
+        {
+            "environment_version": environment_version,
+            "sampler_class": sampler_class,
+            "pact_v1011_active_clutter_slots": list(V1011_ACTIVE_SLOTS),
+            "pact_v1011_inactive_clutter_slots": list(V1011_INACTIVE_SLOTS),
+            "pact_v1011_active_clutter_count": len(V1011_ACTIVE_SLOTS),
+            "pact_v1011_primitive_slots": list(V1011_PRIMITIVE_SLOTS),
+            "pact_v1011_mesh_slots": list(V1011_MESH_SLOTS),
+        }
+    )
+    active = [
+        item
+        for item in layout["objects"]
+        if str(item["palette_slot"]) in V1011_ACTIVE_SLOTS
+    ]
+    row["pact_v1011_identity_sha256"] = hashlib.sha256(
+        canonical_json(
+            [
+                {
+                    "palette_slot": str(item["palette_slot"]),
+                    "uid": str(item["uid"]),
+                    "role": str(item.get("role", "")),
+                    "primitive": item.get("primitive"),
+                }
+                for item in sorted(active, key=lambda value: str(value["palette_slot"]))
+            ]
+        ).encode()
+    ).hexdigest()
+    return row
+
+
+def build_v1011c_manifest_row(
+    family_id: str, intrusion_side: str, pose_id: str
+) -> dict[str, Any]:
+    return _build_v1011_manifest_row(
+        family_id,
+        intrusion_side,
+        pose_id,
+        environment_version=V1011C_ENVIRONMENT_VERSION,
+        sampler_class="PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
+    )
+
+
+def build_v1011d_manifest_row(
+    family_id: str, intrusion_side: str, pose_id: str
+) -> dict[str, Any]:
+    """V10.11d shares V10.11c's clutter exactly; only the sampler differs.
+
+    The per-episode re-draw of slots 01/03/04/06 happens in the sampler, so the
+    row is identical apart from its identity fields.
+    """
+    return _build_v1011_manifest_row(
+        family_id,
+        intrusion_side,
+        pose_id,
+        environment_version=V1011D_ENVIRONMENT_VERSION,
+        sampler_class="PactPlaceCorridorV1011DRandomizedLayoutSampler",
+    )
+
+
 __all__ = [
     "INTRUSION_SIDES",
     "POSE_IDS",
@@ -491,11 +692,22 @@ __all__ = [
     "V1010_ENVIRONMENT_VERSION",
     "V1010_INACTIVE_SLOTS",
     "V1010_SCENE_BY_POSE",
+    "V1011C_ENVIRONMENT_VERSION",
+    "V1011D_ENVIRONMENT_VERSION",
+    "V1011_ACTIVE_SLOTS",
+    "V1011_INACTIVE_SLOTS",
+    "V1011_MESH_SLOTS",
+    "V1011_NEAR_TARGET_SLOTS",
+    "V1011_PRIMITIVES",
+    "V1011_PRIMITIVE_SLOTS",
     "build_v95_layout",
     "build_v95_manifest_row",
     "build_v1010_manifest_row",
+    "build_v1011c_manifest_row",
+    "build_v1011d_manifest_row",
     "load_v95_palette",
     "sha256_payload",
     "v95_cell",
     "v1010_cell",
+    "v1011_cell",
 ]

@@ -31,8 +31,11 @@ from molmo_spaces.data_generation.pact_place.contracts import (
     V1010_ENVIRONMENT_VERSION,
     build_v95_manifest_row,
     build_v1010_manifest_row,
+    build_v1011c_manifest_row,
+    build_v1011d_manifest_row,
     v95_cell,
     v1010_cell,
+    v1011_cell,
 )
 from molmo_spaces.env.env import CPUMujocoEnv
 from molmo_spaces.policy.solvers.object_manipulation.base_object_manipulation_planner_policy import (
@@ -1324,6 +1327,17 @@ class _PactPlaceStaticPendantSampler(PactPlaceCorridorV93Sampler):
         th["pact_v106_r_pos_m"] = row.get("pact_v106_r_pos_m")
         return th
 
+    @staticmethod
+    def _auto_manifest_row_for_house(house_index: int) -> dict[str, Any]:
+        """Row bound before scene validation when no explicit row was given.
+
+        Successors that ship their own palette must override this as well as
+        ``_ensure_manifest_row``; ``sample_task`` binds the row before
+        ``current_house_index`` exists, so it cannot go through the latter.
+        """
+        family, side, pose = v1010_cell(house_index)
+        return build_v1010_manifest_row(family, side, pose)
+
     def sample_task(self, *args, **kwargs):
         """Refuse a scene/pose/hash mismatch before the task is created."""
         requested_house_index = kwargs.get("house_index")
@@ -1341,8 +1355,9 @@ class _PactPlaceStaticPendantSampler(PactPlaceCorridorV93Sampler):
         # otherwise a sampler reused across houses would validate the previous
         # scene and only switch rows later in _draw_theta.
         if not self._pact_manifest_row_is_explicit:
-            family, side, pose = v1010_cell(requested_house_index)
-            self._pact_manifest_row = build_v1010_manifest_row(family, side, pose)
+            self._pact_manifest_row = self._auto_manifest_row_for_house(
+                requested_house_index
+            )
             self._pact_auto_house_index = requested_house_index
         row = self._pact_manifest_row or {}
         expected = row.get("pact_v106_scene_sha256")
@@ -3450,6 +3465,31 @@ class PactPlaceCorridorV1011C33PctTallerPrimitiveSampler(
         th["pact_v1011c_footprints_unchanged"] = True
         return th
 
+    def _ensure_manifest_row(self) -> dict[str, Any]:
+        # Without this the inherited V9.3 implementation would hand back a plain
+        # V9.5 row -- eight mesh objects and no primitives -- and the layout
+        # check below would reject it.
+        if self._pact_manifest_row_is_explicit:
+            row = self._pact_manifest_row or {}
+            if "pose_id" not in row:
+                raise ValueError(
+                    "an explicit V10.11c manifest row must bind pose_id"
+                )
+            return row
+        try:
+            house_index = int(self.current_house_index)
+        except (AttributeError, TypeError, ValueError):
+            house_index = 0
+        if self._pact_manifest_row is None or self._pact_auto_house_index != house_index:
+            self._pact_manifest_row = self._auto_manifest_row_for_house(house_index)
+            self._pact_auto_house_index = house_index
+        return self._pact_manifest_row
+
+    @staticmethod
+    def _auto_manifest_row_for_house(house_index: int) -> dict[str, Any]:
+        family, side, pose = v1011_cell(house_index)
+        return build_v1011c_manifest_row(family, side, pose)
+
 
 class PactPlaceCorridorV1011DRandomizedLayoutSampler(
     PactPlaceCorridorV1011C33PctTallerPrimitiveSampler
@@ -3598,6 +3638,31 @@ class PactPlaceCorridorV1011DRandomizedLayoutSampler(
             raise ValueError(
                 f"V10.11d randomized {sorted(placed)}, expected {sorted(expected)}"
             )
+
+    def _ensure_manifest_row(self) -> dict[str, Any]:
+        # Without this the inherited V9.3 implementation would hand back a plain
+        # V9.5 row -- eight mesh objects and no primitives -- and the layout
+        # check below would reject it.
+        if self._pact_manifest_row_is_explicit:
+            row = self._pact_manifest_row or {}
+            if "pose_id" not in row:
+                raise ValueError(
+                    "an explicit V10.11d manifest row must bind pose_id"
+                )
+            return row
+        try:
+            house_index = int(self.current_house_index)
+        except (AttributeError, TypeError, ValueError):
+            house_index = 0
+        if self._pact_manifest_row is None or self._pact_auto_house_index != house_index:
+            self._pact_manifest_row = self._auto_manifest_row_for_house(house_index)
+            self._pact_auto_house_index = house_index
+        return self._pact_manifest_row
+
+    @staticmethod
+    def _auto_manifest_row_for_house(house_index: int) -> dict[str, Any]:
+        family, side, pose = v1011_cell(house_index)
+        return build_v1011d_manifest_row(family, side, pose)
 
 
 __all__ = [

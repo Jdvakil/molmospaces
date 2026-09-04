@@ -193,12 +193,15 @@ def test_v1010_speed_amendment_changes_only_the_first_free_space_segment() -> No
     assert comparison["n_speed_changes"] == 1
 
 
-def test_public_configs_expose_only_the_three_supported_lineages(monkeypatch) -> None:
+def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
     monkeypatch.setenv("MLSPACES_ASSETS_DIR", str(Path.home() / ".cache" / "molmo-spaces"))
+    from molmo_spaces.data_generation.config import pact_place_datagen_configs
     from molmo_spaces.data_generation.config.pact_place_datagen_configs import (
         FrankaSkinPactPlaceV5Config,
         FrankaSkinPactPlaceV95RealClutterConfig,
         FrankaSkinPactPlaceV1010FourObjectConfig,
+        FrankaSkinPactPlaceV1011CMixedClutterConfig,
+        FrankaSkinPactPlaceV1011DRandomizedClutterConfig,
     )
 
     cases = (
@@ -215,7 +218,24 @@ def test_public_configs_expose_only_the_three_supported_lineages(monkeypatch) ->
             1050,
             "PactPlaceCorridorV1010FourObjectSampler",
         ),
+        (
+            FrankaSkinPactPlaceV1011CMixedClutterConfig,
+            24,
+            1050,
+            "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
+        ),
+        (
+            FrankaSkinPactPlaceV1011DRandomizedClutterConfig,
+            24,
+            1050,
+            "PactPlaceCorridorV1011DRandomizedLayoutSampler",
+        ),
     )
+    # The public surface is exactly these lineages, so an environment added
+    # without a config, or a config added without a case here, fails loudly.
+    assert set(pact_place_datagen_configs.__all__) == {
+        case[0].__name__ for case in cases
+    }
     for config_class, n_scenes, horizon, sampler_name in cases:
         config = config_class()
         assert config.task_horizon == horizon
