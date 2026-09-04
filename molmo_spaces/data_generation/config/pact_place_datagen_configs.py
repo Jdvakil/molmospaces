@@ -21,6 +21,8 @@ from molmo_spaces.tasks.pact_place import (
     PactPlaceCorridorPolicyConfig,
     PactPlaceCorridorTask,
     PactPlaceCorridorV1010FourObjectSampler,
+    PactPlaceCorridorV1011C33PctTallerPrimitiveSampler,
+    PactPlaceCorridorV1011DRandomizedLayoutSampler,
     PactPlaceV5Sampler,
     PactPlaceV95RealClutterSampler,
 )
@@ -127,8 +129,42 @@ class FrankaSkinPactPlaceV1010FourObjectConfig(_PactPlaceBaseConfig):
         return "franka_skin_pact_place_v1010_four_object"
 
 
+@register_config("FrankaSkinPactPlaceV1011CMixedClutterConfig")
+class FrankaSkinPactPlaceV1011CMixedClutterConfig(_PactPlaceBaseConfig):
+    """V10.11c: six live bodies, three of them runtime MuJoCo primitives."""
+
+    task_horizon: int | None = 1050
+    task_sampler_config: PickTaskSamplerConfig = _sampler_config(
+        PactPlaceCorridorV1011C33PctTallerPrimitiveSampler,
+        _v1010_scene_paths(),
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pact_place_v1011c_mixed_clutter"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pact_place_v1011c_mixed_clutter"
+
+
+@register_config("FrankaSkinPactPlaceV1011DRandomizedClutterConfig")
+class FrankaSkinPactPlaceV1011DRandomizedClutterConfig(_PactPlaceBaseConfig):
+    """V10.11d: V10.11c clutter with every clutter position randomized."""
+
+    task_horizon: int | None = 1050
+    task_sampler_config: PickTaskSamplerConfig = _sampler_config(
+        PactPlaceCorridorV1011DRandomizedLayoutSampler,
+        _v1010_scene_paths(),
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pact_place_v1011d_randomized_clutter"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pact_place_v1011d_randomized_clutter"
+
+
 __all__ = [
     "FrankaSkinPactPlaceV5Config",
     "FrankaSkinPactPlaceV95RealClutterConfig",
     "FrankaSkinPactPlaceV1010FourObjectConfig",
+    "FrankaSkinPactPlaceV1011CMixedClutterConfig",
+    "FrankaSkinPactPlaceV1011DRandomizedClutterConfig",
 ]

@@ -12,6 +12,8 @@ variants.
 | `FrankaSkinPactPlaceV5Config` | V5 | Hidden left/right intrusion panel, target cup, outside placement tray; no household clutter | 2 |
 | `FrankaSkinPactPlaceV95RealClutterConfig` | V9.5 real-clutter lineage | V5 shell, active left/right panel, eight movable Objaverse household objects, including two route-bearing bottles | 8 |
 | `FrankaSkinPactPlaceV1010FourObjectConfig` | V10.10 | V9.5 route layout with four live household objects and a two-lobe static pendant | 24 |
+| `FrankaSkinPactPlaceV1011CMixedClutterConfig` | V10.11c | Six live bodies: three mesh props and three runtime MuJoCo primitives, two of them sampled near the target | 24 |
+| `FrankaSkinPactPlaceV1011DRandomizedClutterConfig` | V10.11d | V10.11c clutter with every clutter position redrawn per episode | 24 |
 
 The runtime marker for experiment V5 remains
 `pact_place_corridor_v2`, because V5 was the experiment name rather than a
@@ -35,6 +37,37 @@ The four live household objects are:
 The remaining four V9.5 palette assets stay compiled but are parked outside the
 workspace. This keeps the observation and asset-installation contract aligned
 with the eight-object lineage.
+
+V10.11c reuses the V10.10 pendant scenes and route unchanged and activates six
+clutter bodies instead of four. Three are the existing mesh assets and three are
+MuJoCo primitives built on the episode `MjSpec`, so no scene file changes and
+the certified pendant geometry stays byte-for-byte identical:
+
+- slot 01: cylinder, radius 0.045 m, height 0.32585 m (outbound route vessel)
+- slot 03: `Plate_10`
+- slot 04: `Plate_22`
+- slot 06: `Soap_Bottle_11` (inbound route vessel)
+- slot 08: cylinder, radius 0.035 m, height 0.23940 m (near-target)
+- slot 09: box, 0.070 x 0.070 x 0.23940 m (near-target)
+
+Slots 08 and 09 are drawn per episode in a bounded annular sector around the
+target cup, sampled uniformly by area, so near-target clutter varies between
+episodes. Because the route-bearing slot changed shape, V10.11c recomputes the
+route and corridor predicates from the primitive's own half extents rather than
+inheriting V9.5's numbers, and refuses any layout that closes either detour.
+Its vessel-height ceiling is raised to 0.32585 m; every other lineage, V10.10
+included, keeps the original 0.25 m limit.
+
+V10.11d changes only *where* the clutter stands. V10.11c inherits the frozen
+V9.5 layout, in which `Plate_10` sits at exactly `(0.980, -0.220)` and
+`Plate_22` at `(1.090, +0.300)` in all eight family/side combinations, while
+the two vessels move only by the inherited millimetre-scale jitter. V10.11d
+redraws slots 01, 03, 04 and 06 per episode inside registered proposal boxes,
+rejecting any candidate that leaves the bench shell or touches an
+already-placed body, and additionally re-checking slot 01 against both route
+predicates on every candidate because its admissible lateral window is roughly
+60 mm wide and its sign depends on the panel side. The clutter identity is
+unchanged from V10.11c.
 
 ## Setup
 
@@ -70,6 +103,14 @@ python -m molmo_spaces.data_generation.main \
 # V10.10: one episode for each family x side x pendant-pose cell.
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1010FourObjectConfig
+
+# V10.11c: six live bodies, three of them primitives.
+python -m molmo_spaces.data_generation.main \
+  molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1011CMixedClutterConfig
+
+# V10.11d: V10.11c clutter with every clutter position randomized.
+python -m molmo_spaces.data_generation.main \
+  molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1011DRandomizedClutterConfig
 ```
 
 Each command creates a timestamped directory under the config's `output_dir`.
@@ -92,10 +133,18 @@ The cell builders are public and deterministic:
 from molmo_spaces.data_generation.pact_place.contracts import (
     build_v95_manifest_row,
     build_v1010_manifest_row,
+    build_v1011c_manifest_row,
+    build_v1011d_manifest_row,
 )
 
 v95_row = build_v95_manifest_row("F0_target_side_stagger", "left")
 v1010_row = build_v1010_manifest_row(
+    "F0_target_side_stagger", "left", "center"
+)
+v1011c_row = build_v1011c_manifest_row(
+    "F0_target_side_stagger", "left", "center"
+)
+v1011d_row = build_v1011d_manifest_row(
     "F0_target_side_stagger", "left", "center"
 )
 ```
