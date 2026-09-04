@@ -69,9 +69,23 @@ PACT_PLACE_V10_ENVIRONMENT_VERSION = "pact_place_corridor_v10_compound_pendant"
 PACT_PLACE_V102_ENVIRONMENT_VERSION = "pact_place_corridor_v10_2_raised_pendant"
 PACT_PLACE_V105_ENVIRONMENT_VERSION = "pact_place_corridor_v10_5_v95_clutter_static_pendant"
 PACT_PLACE_V106_ENVIRONMENT_VERSION = "pact_place_corridor_v10_6_v95_clutter_asymmetric_pendant"
+PACT_PLACE_V1011_ENVIRONMENT_VERSION = "pact_place_corridor_v10_11_mixed_clutter"
+PACT_PLACE_V1011B_ENVIRONMENT_VERSION = (
+    "pact_place_corridor_v10_11b_tall_primitives"
+)
+PACT_PLACE_V1011C_ENVIRONMENT_VERSION = (
+    "pact_place_corridor_v10_11c_33pct_taller_primitives"
+)
+PACT_PLACE_V1011D_ENVIRONMENT_VERSION = (
+    "pact_place_corridor_v10_11d_randomized_clutter"
+)
 PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS = (
     PACT_PLACE_V106_ENVIRONMENT_VERSION,
     V1010_ENVIRONMENT_VERSION,
+    PACT_PLACE_V1011_ENVIRONMENT_VERSION,
+    PACT_PLACE_V1011B_ENVIRONMENT_VERSION,
+    PACT_PLACE_V1011C_ENVIRONMENT_VERSION,
+    PACT_PLACE_V1011D_ENVIRONMENT_VERSION,
 )
 
 
@@ -491,27 +505,95 @@ class _PactPlaceRealClutterSampler(_PactPlaceLegacyClutterShellSampler):
             uid = str(item["uid"])
             slot = str(item["slot"])
             slot_class = str(item.get("slot_class") or "prop")
-            clutter_spec = MjSpec.from_file(str(install_uid(uid)))
-            body = clutter_spec.worldbody.bodies[0]
-            if slot_class == "mount":
-                for joint in list(clutter_spec.joints):
-                    if joint.type == mujoco.mjtJoint.mjJNT_FREE:
-                        clutter_spec.delete(joint)
-                body.mocap = True
-            elif not body.first_joint():
+            namespace = f"pact_clutter_{slot}/"
+            park = np.asarray(self.CLUTTER_PARK_XYZ_M, dtype=float) + np.array(
+                [0.35 * index, 0.0, 0.0]
+            )
+            primitive = dict(item.get("primitive") or {})
+            if primitive:
+                if slot_class != "prop":
+                    raise ValueError("primitive clutter must be a movable prop")
+                shape = str(primitive.get("shape") or "").lower()
+                dimensions = np.asarray(item.get("dimensions_m") or [], dtype=float)
+                if dimensions.shape != (3,) or np.any(dimensions <= 0.0):
+                    raise ValueError(
+                        f"primitive clutter {slot!r} has invalid dimensions: "
+                        f"{item.get('dimensions_m')!r}"
+                    )
+                if shape == "cylinder":
+                    radius = float(primitive.get("radius_m", -1.0))
+                    height = float(primitive.get("height_m", -1.0))
+                    if radius <= 0.0 or height <= 0.0:
+                        raise ValueError(f"invalid cylinder primitive for slot {slot!r}")
+                    expected = np.asarray([2.0 * radius, 2.0 * radius, height])
+                    if not np.allclose(dimensions, expected, atol=1e-9, rtol=0.0):
+                        raise ValueError(
+                            f"cylinder dimensions disagree with primitive spec: "
+                            f"{dimensions.tolist()} != {expected.tolist()}"
+                        )
+                    geom_type = mujoco.mjtGeom.mjGEOM_CYLINDER
+                    geom_size = [radius, height / 2.0, 0.0]
+                elif shape == "box":
+                    size = np.asarray(primitive.get("size_m") or [], dtype=float)
+                    if size.shape != (3,) or np.any(size <= 0.0):
+                        raise ValueError(f"invalid box primitive for slot {slot!r}")
+                    if not np.allclose(dimensions, size, atol=1e-9, rtol=0.0):
+                        raise ValueError(
+                            f"box dimensions disagree with primitive spec: "
+                            f"{dimensions.tolist()} != {size.tolist()}"
+                        )
+                    geom_type = mujoco.mjtGeom.mjGEOM_BOX
+                    geom_size = (size / 2.0).tolist()
+                else:
+                    raise ValueError(
+                        f"unsupported primitive clutter shape {shape!r} in slot {slot!r}"
+                    )
+                full_name = f"{namespace}{uid}"
+                body = spec.worldbody.add_body(name=full_name, pos=park)
                 body.add_joint(
                     name=f"{uid}_pact_clutter_{slot}_free",
                     type=mujoco.mjtJoint.mjJNT_FREE,
                     damping=float(self.CLUTTER_FREE_JOINT_DAMPING),
                 )
-            namespace = f"pact_clutter_{slot}/"
-            original_name = body.name
-            park = np.asarray(self.CLUTTER_PARK_XYZ_M, dtype=float) + np.array(
-                [0.35 * index, 0.0, 0.0]
-            )
-            frame = spec.worldbody.add_frame(pos=park)
-            frame.attach_body(body, namespace, "")
-            full_name = namespace + original_name
+                rgba = list(primitive.get("rgba") or [0.55, 0.58, 0.62, 1.0])
+                if len(rgba) != 4:
+                    raise ValueError(f"primitive clutter {slot!r} needs four RGBA values")
+                body.add_geom(
+                    name=f"{namespace}{uid}_collision",
+                    type=geom_type,
+                    size=geom_size,
+                    rgba=rgba,
+                    contype=1,
+                    conaffinity=1,
+                    density=float(primitive.get("density_kg_m3", 1000.0)),
+                )
+                annotation = {
+                    "category": str(item.get("category") or "object"),
+                    "boundingBox": {
+                        "x": float(dimensions[0]),
+                        "y": float(dimensions[1]),
+                        "z": float(dimensions[2]),
+                    },
+                }
+            else:
+                clutter_spec = MjSpec.from_file(str(install_uid(uid)))
+                body = clutter_spec.worldbody.bodies[0]
+                if slot_class == "mount":
+                    for joint in list(clutter_spec.joints):
+                        if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                            clutter_spec.delete(joint)
+                    body.mocap = True
+                elif not body.first_joint():
+                    body.add_joint(
+                        name=f"{uid}_pact_clutter_{slot}_free",
+                        type=mujoco.mjtJoint.mjJNT_FREE,
+                        damping=float(self.CLUTTER_FREE_JOINT_DAMPING),
+                    )
+                original_name = body.name
+                frame = spec.worldbody.add_frame(pos=park)
+                frame.attach_body(body, namespace, "")
+                full_name = namespace + original_name
+                annotation = ObjectMeta.annotation(uid) or {}
             if any(
                 forbidden in full_name
                 for forbidden in ("cavity_obj_", "pact_intrusion_", "place_receptacle")
@@ -519,13 +601,13 @@ class _PactPlaceRealClutterSampler(_PactPlaceLegacyClutterShellSampler):
                 raise ValueError(f"illegal clutter body name {full_name!r}")
             if not full_name.startswith("pact_clutter_"):
                 raise ValueError(f"clutter body lacks required prefix: {full_name!r}")
-            annotation = ObjectMeta.annotation(uid) or {}
             record = {
                 "slot": slot,
                 "uid": uid,
                 "body": full_name,
                 "park_m": park.tolist(),
                 "slot_class": slot_class,
+                "primitive": primitive or None,
             }
             self._pact_clutter_objects.append(record)
             name_to_meta[full_name] = {
@@ -607,10 +689,20 @@ class _PactPlaceRealClutterSampler(_PactPlaceLegacyClutterShellSampler):
             raise ValueError(f"active clutter body has no collision geoms: {body_name}")
         return np.min(np.stack(lows), axis=0), np.max(np.stack(highs), axis=0)
 
+    def _prepare_pact_clutter_layout(self, th: dict[str, Any]) -> None:
+        """Episode hook before the manifest layout is materialized.
+
+        Historical samplers intentionally do nothing. V10.11 uses this narrow
+        hook to draw the target rest pose once, before its two target-relative
+        clutter placements are generated, without changing older random
+        streams or duplicating the V5/V9 theta implementation.
+        """
+
     def _draw_theta(self):
         # Call the pre-clutter implementation directly: V3/V4 remain unchanged,
         # while V5 does not try to treat free mesh bodies as scalar mocap boxes.
         th = PactPlaceCorridorV2Sampler._draw_theta(self)
+        self._prepare_pact_clutter_layout(th)
         th.update(
             {
                 "pact_place_environment_version": self.PACT_PLACE_ENVIRONMENT_VERSION,
@@ -902,6 +994,8 @@ class _PactPlaceV9ChicaneSampler(_PactPlaceRealClutterSampler):
 
     PACT_PLACE_ENVIRONMENT_VERSION = "pact_place_corridor_v9_2"
     VESSEL_ROLES = frozenset({"inbound_vessel", "outbound_vessel"})
+    # V10.11c raises only its own ceiling; every older sampler keeps 0.25 m.
+    VESSEL_HEIGHT_RANGE_M = (0.15, 0.25)
     VESSEL_CATEGORIES = frozenset(
         {
             "vase",
@@ -949,8 +1043,12 @@ class _PactPlaceV9ChicaneSampler(_PactPlaceRealClutterSampler):
             if str(item.get("category", "")).lower() not in self.VESSEL_CATEGORIES:
                 raise ValueError(f"v9 vessel category is not approved: {item.get('category')!r}")
             dimensions = [float(value) for value in item.get("dimensions_m", [])]
-            if len(dimensions) != 3 or not 0.15 <= dimensions[2] <= 0.25:
-                raise ValueError(f"v9 vessel height is outside 0.15-0.25 m: {dimensions}")
+            height_low, height_high = self.VESSEL_HEIGHT_RANGE_M
+            if len(dimensions) != 3 or not height_low <= dimensions[2] <= height_high:
+                raise ValueError(
+                    f"v9 vessel height is outside {height_low}-{height_high} m: "
+                    f"{dimensions}"
+                )
         return palette
 
     def _layout(self) -> dict[str, Any]:
@@ -1550,10 +1648,14 @@ class PactPlaceCorridorPolicy(PickAndPlacePlannerPolicy):
         return self._environment_version() in {
             "pact_place_corridor_v9_3",
             V1010_ENVIRONMENT_VERSION,
+            *PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS,
         }
 
     def _v106_enabled(self) -> bool:
-        return self._environment_version() == V1010_ENVIRONMENT_VERSION
+        # Gates the initial free-space speed cap and the per-frame telemetry.
+        # A V10.11 version missing here would run different speeds and emit no
+        # telemetry while otherwise looking healthy.
+        return self._environment_version() in PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS
 
     @staticmethod
     def _mounted_fixture_roles(
@@ -2945,6 +3047,559 @@ class PactPlaceCorridorPolicyConfig(PickAndPlacePlannerPolicyConfig):
         self.policy_cls = PactPlaceCorridorPolicy
 
 
+class PactPlaceCorridorV1011MixedClutterSampler(_PactPlaceStaticPendantSampler):
+    """V10.10 lane with three mesh props and three runtime primitives.
+
+    The certified pose-specific scene remains byte-identical. Primitive bodies
+    are added to the episode MjSpec by the shared V5 injector, and all six live
+    clutter bodies remain movable free bodies. Slots 08/09 are sampled in a
+    bounded target-relative annular sector from a single target rest draw.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V1011_ENVIRONMENT_VERSION
+    ACTIVE_CLUTTER_SLOTS = ("01", "03", "04", "06", "08", "09")
+    INACTIVE_CLUTTER_SLOTS = ("00", "02", "05", "07")
+    ACTIVE_CLUTTER_COUNT = 6
+    PRIMITIVE_SLOTS = ("01", "08", "09")
+    MESH_SLOTS = ("03", "04", "06")
+    NEAR_TARGET_SLOTS = ("08", "09")
+    EXPECTED_ACTIVE_UIDS = {
+        "01": "pact_primitive_cylinder_01",
+        "03": "Plate_10",
+        "04": "Plate_22",
+        "06": "Soap_Bottle_11",
+        "08": "pact_primitive_cylinder_08",
+        "09": "pact_primitive_box_09",
+    }
+    NEAR_ANGLE_LOW_RAD = float(np.deg2rad(-65.0))
+    NEAR_ANGLE_HIGH_RAD = float(np.deg2rad(65.0))
+    NEAR_RADIUS_MAX_M = 0.220
+    NEAR_TARGET_GAP_M = 0.020
+    NEAR_OBJECT_GAP_M = 0.010
+    NEAR_MAX_CANDIDATES = 64
+    # The target location is drawn once in _prepare_pact_clutter_layout.
+    # A second independent jitter would invalidate target-relative placement.
+    OBJ_JIT_XY = (0.0, 0.0)
+
+    @classmethod
+    def mixed_identity_sha256(cls, palette) -> str:
+        import hashlib
+        import json as _json
+
+        payload = [
+            {
+                "slot": str(item["slot"]),
+                "uid": str(item["uid"]),
+                "role": str(item.get("role", "")),
+                "primitive": item.get("primitive"),
+            }
+            for item in sorted(palette, key=lambda value: str(value["slot"]))
+        ]
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @classmethod
+    def mixed_layout_sha256(cls, objects) -> str:
+        import hashlib
+        import json as _json
+
+        payload = [
+            {
+                "palette_slot": str(item["palette_slot"]),
+                "uid": str(item["uid"]),
+                "center_m": [float(value) for value in item["center_m"]],
+                "quat_wxyz": [float(value) for value in item["quat_wxyz"]],
+            }
+            for item in sorted(objects, key=lambda value: str(value["palette_slot"]))
+        ]
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def target_planar_bounding_radius_m(self) -> tuple[float, str]:
+        """Conservative target footprint about its free-joint origin.
+
+        Cup_10 settles with the inherited 90-degree X rotation, so metadata
+        X/Y alone is not its table footprint. Once the scene is compiled, use
+        collision-geom AABBs and the current fixed tilt to bound every corner's
+        radial XY distance. Yaw during settling preserves that radius.
+        """
+        env = getattr(self, "env", None)
+        if env is not None and getattr(self, "_injected_obj_name", None):
+            model, data = env.current_model, env.current_data
+            mujoco.mj_forward(model, data)
+            body_id = int(model.body(str(self._injected_obj_name)).id)
+            root_id = int(model.body_rootid[body_id])
+            origin = np.asarray(data.xpos[root_id], dtype=float)
+            radii: list[float] = []
+            for geom_id in range(int(model.ngeom)):
+                geom_body = int(model.geom_bodyid[geom_id])
+                if int(model.body_rootid[geom_body]) != root_id:
+                    continue
+                if int(model.geom_contype[geom_id]) == 0 and int(
+                    model.geom_conaffinity[geom_id]
+                ) == 0:
+                    continue
+                local_center = np.asarray(model.geom_aabb[geom_id, :3], dtype=float)
+                local_half = np.asarray(model.geom_aabb[geom_id, 3:], dtype=float)
+                rotation = np.asarray(data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
+                geom_origin = np.asarray(data.geom_xpos[geom_id], dtype=float)
+                for sx in (-1.0, 1.0):
+                    for sy in (-1.0, 1.0):
+                        for sz in (-1.0, 1.0):
+                            corner = local_center + local_half * np.asarray([sx, sy, sz])
+                            world = geom_origin + rotation @ corner
+                            radii.append(float(np.linalg.norm((world - origin)[:2])))
+            if radii:
+                return max(radii), "compiled_collision_aabb_corner_radius"
+        annotation = ObjectMeta.annotation(self.TARGET_UID) or {}
+        bounds = annotation.get("boundingBox") or {}
+        try:
+            # The inherited target orientation maps source Z into the table
+            # plane. Half the X/Z diagonal is invariant to the later yaw.
+            return (
+                float(np.hypot(float(bounds["x"]), float(bounds["z"]))) / 2.0,
+                "metadata_xz_half_diagonal_fallback",
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Cup_10 target metadata lacks a valid X/Z bounding box") from exc
+
+    def _prepare_pact_clutter_layout(self, th: dict[str, Any]) -> None:
+        # This is the one and only target-XY random draw for the episode. The
+        # inherited target settle later calls _obj_rest and receives this value.
+        x = TUBE_X0 + max(0.12, float(th["target_frac"]) * float(th["depth"]) - 0.04)
+        y = float(np.random.uniform(-1.0, 1.0) * (float(th["ap_w"]) / 2.0 - 0.05))
+        self._v1011_target_rest = (float(x), y, float(SHELF_TOP_Z))
+        self._v1011_target_draw_count = 1
+
+    def _obj_rest(self):
+        cached = getattr(self, "_v1011_target_rest", None)
+        return tuple(cached) if cached is not None else super()._obj_rest()
+
+    @staticmethod
+    def _planar_boxes_separated(
+        center: np.ndarray,
+        half: np.ndarray,
+        other_center: np.ndarray,
+        other_half: np.ndarray,
+        gap: float,
+    ) -> bool:
+        delta = np.abs(center[:2] - other_center[:2])
+        required = half[:2] + other_half[:2] + float(gap)
+        return bool(np.any(delta >= required - 1e-12))
+
+    def _sample_near_target_center(
+        self,
+        *,
+        half: np.ndarray,
+        object_planar_radius_m: float,
+        occupied: list[tuple[np.ndarray, np.ndarray]],
+    ) -> tuple[list[float], dict[str, Any]]:
+        target = np.asarray(self._v1011_target_rest, dtype=float)
+        target_radius, target_radius_source = self.target_planar_bounding_radius_m()
+        object_radius = float(object_planar_radius_m)
+        if not np.isfinite(object_radius) or object_radius <= 0.0:
+            raise ValueError("V10.11 object planar radius must be finite and positive")
+        radius_min = target_radius + object_radius + self.NEAR_TARGET_GAP_M
+        if radius_min >= self.NEAR_RADIUS_MAX_M:
+            raise ValueError("V10.11 target-relative annulus is empty")
+        shell_low = np.asarray(self.CLUTTER_WORKSPACE_LOW, dtype=float)
+        shell_high = np.asarray(self.CLUTTER_WORKSPACE_HIGH, dtype=float)
+        for candidate_index in range(self.NEAR_MAX_CANDIDATES):
+            angle = float(
+                np.random.uniform(self.NEAR_ANGLE_LOW_RAD, self.NEAR_ANGLE_HIGH_RAD)
+            )
+            unit = float(np.random.uniform())
+            radius = float(
+                np.sqrt(
+                    radius_min * radius_min
+                    + unit
+                    * (self.NEAR_RADIUS_MAX_M * self.NEAR_RADIUS_MAX_M
+                       - radius_min * radius_min)
+                )
+            )
+            center = np.asarray(
+                [
+                    target[0] + radius * np.cos(angle),
+                    target[1] + radius * np.sin(angle),
+                    SHELF_TOP_Z + float(half[2]),
+                ],
+                dtype=float,
+            )
+            if np.any(center - half < shell_low - 1e-12) or np.any(
+                center + half > shell_high + 1e-12
+            ):
+                continue
+            if any(
+                not self._planar_boxes_separated(
+                    center, half, other_center, other_half, self.NEAR_OBJECT_GAP_M
+                )
+                for other_center, other_half in occupied
+            ):
+                continue
+            return center.tolist(), {
+                "candidate_index": candidate_index,
+                "angle_rad": angle,
+                "area_uniform_u": unit,
+                "radius_m": radius,
+                "radius_min_m": radius_min,
+                "radius_max_m": self.NEAR_RADIUS_MAX_M,
+                "target_planar_bounding_radius_m": target_radius,
+                "target_radius_source": target_radius_source,
+                "object_planar_bounding_radius_m": object_radius,
+            }
+        raise ValueError(
+            f"V10.11 could not place target-relative clutter in "
+            f"{self.NEAR_MAX_CANDIDATES} deterministic candidates"
+        )
+
+    def _randomize_base_slot_centers(self, by_slot, layout) -> dict[str, Any]:
+        """Redraw slots 01/03/04/06 before the near-target annulus is sampled.
+
+        V10.11, V10.11b and V10.11c keep the inherited V9.5 layout, so this is
+        a no-op for them and their recorded layouts are unaffected.
+        """
+        return {}
+
+    def _layout(self):
+        import copy
+
+        from molmo_spaces.data_generation.pact_place.contracts import (
+            panel_corridor_metrics,
+            route_blocker_metrics,
+        )
+
+        layout = copy.deepcopy(super()._layout())
+        by_slot = {str(item["palette_slot"]): item for item in layout["objects"]}
+        missing = [slot for slot in self.ACTIVE_CLUTTER_SLOTS if slot not in by_slot]
+        if missing:
+            raise ValueError(f"V10.11 active slots absent from layout: {missing}")
+        for slot, uid in self.EXPECTED_ACTIVE_UIDS.items():
+            if str(by_slot[slot]["uid"]) != uid:
+                raise ValueError(
+                    f"V10.11 slot {slot} carries {by_slot[slot]['uid']!r}, "
+                    f"expected {uid!r}"
+                )
+        if getattr(self, "_v1011_target_rest", None) is None:
+            raise ValueError("V10.11 target rest must be drawn before clutter layout")
+        # Successors may redraw the four non-target-relative slots before the
+        # near-target annulus is sampled, so that slots 08/09 see the final
+        # occupancy. The default is a no-op, which leaves V10.11/b/c layouts
+        # bit-identical to what they produced before this hook existed.
+        base_randomization = self._randomize_base_slot_centers(by_slot, layout)
+        occupied: list[tuple[np.ndarray, np.ndarray]] = []
+        for slot in ("01", "03", "04", "06"):
+            item = by_slot[slot]
+            occupied.append(
+                (np.asarray(item["center_m"], dtype=float),
+                 np.asarray(item["half_m"], dtype=float))
+            )
+        placements = {}
+        for slot in self.NEAR_TARGET_SLOTS:
+            item = by_slot[slot]
+            half = np.asarray(item["half_m"], dtype=float)
+            primitive_shape = str((item.get("primitive") or {}).get("shape") or "")
+            if primitive_shape == "cylinder":
+                object_planar_radius = float(max(half[0], half[1]))
+            elif primitive_shape == "box":
+                # A box can yaw while settling. Its circumscribed XY radius,
+                # not its half-width, is the rotation-invariant footprint.
+                object_planar_radius = float(np.linalg.norm(half[:2]))
+            else:
+                raise ValueError(
+                    f"V10.11 near-target slot {slot} has unsupported shape "
+                    f"{primitive_shape!r}"
+                )
+            center, detail = self._sample_near_target_center(
+                half=half,
+                object_planar_radius_m=object_planar_radius,
+                occupied=occupied,
+            )
+            item["center_m"] = center
+            item["near_target_placement"] = detail
+            occupied.append((np.asarray(center, dtype=float), half))
+            placements[slot] = detail
+        active = [by_slot[slot] for slot in self.ACTIVE_CLUTTER_SLOTS]
+        if len(active) != self.ACTIVE_CLUTTER_COUNT:
+            raise ValueError(
+                f"V10.11 activated {len(active)} slots, expected "
+                f"{self.ACTIVE_CLUTTER_COUNT}"
+            )
+        layout["objects"] = active
+        layout["active_clutter_slots"] = list(self.ACTIVE_CLUTTER_SLOTS)
+        layout["inactive_clutter_slots"] = list(self.INACTIVE_CLUTTER_SLOTS)
+        layout["active_clutter_count"] = self.ACTIVE_CLUTTER_COUNT
+        layout["near_target_placements"] = placements
+        # Only successors that actually randomize record this, so V10.11/b/c
+        # layouts keep exactly the key set they had before the hook existed.
+        if base_randomization:
+            layout["base_slot_randomization"] = base_randomization
+        layout["target_rest_m"] = list(self._v1011_target_rest)
+        layout["target_draw_count"] = int(self._v1011_target_draw_count)
+        layout["pact_v1011_identity_sha256"] = self.mixed_identity_sha256(
+            self._palette()
+        )
+        layout["pact_v1011_layout_sha256"] = self.mixed_layout_sha256(active)
+        layout["layout_id"] = f"{layout['layout_id']}_v1011_mixed"
+        # The route-bearing slot changed shape. Recompute these predicates from
+        # the actual primitive half extents instead of retaining V9.5 numbers.
+        layout["route_blocker_center_xy_m"] = list(by_slot["01"]["center_m"][:2])
+        layout["nominal_route_metrics"] = route_blocker_metrics(layout)
+        layout["panel_corridor_metrics"] = panel_corridor_metrics(layout)
+        if not layout["nominal_route_metrics"]["detour_admitted"]:
+            raise ValueError("V10.11 primitive vessel closes the nominal detour")
+        if not layout["panel_corridor_metrics"]["detour_admitted"]:
+            raise ValueError("V10.11 primitive vessel closes the panel corridor")
+        return layout
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        layout = th.get("pact_clutter_layout") or {}
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v1011_active_clutter_slots"] = list(self.ACTIVE_CLUTTER_SLOTS)
+        th["pact_v1011_inactive_clutter_slots"] = list(self.INACTIVE_CLUTTER_SLOTS)
+        th["pact_v1011_active_clutter_count"] = self.ACTIVE_CLUTTER_COUNT
+        th["pact_v1011_primitive_slots"] = list(self.PRIMITIVE_SLOTS)
+        th["pact_v1011_mesh_slots"] = list(self.MESH_SLOTS)
+        th["pact_v1011_target_rest_m"] = layout.get("target_rest_m")
+        th["pact_v1011_target_draw_count"] = layout.get("target_draw_count")
+        th["pact_v1011_near_target_placements"] = layout.get(
+            "near_target_placements"
+        )
+        th["pact_v1011_identity_sha256"] = layout.get(
+            "pact_v1011_identity_sha256"
+        )
+        th["pact_v1011_layout_sha256"] = layout.get("pact_v1011_layout_sha256")
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        active = list(getattr(self, "_pact_active_clutter_names", []))
+        if len(active) != self.ACTIVE_CLUTTER_COUNT:
+            raise ValueError(
+                f"V10.11 expected {self.ACTIVE_CLUTTER_COUNT} active clutter "
+                f"bodies, got {len(active)}: {active}"
+            )
+        if int(th.get("pact_v1011_target_draw_count") or 0) != 1:
+            raise ValueError("V10.11 target was not drawn exactly once")
+
+
+class PactPlaceCorridorV1011BTallPrimitiveSampler(
+    PactPlaceCorridorV1011MixedClutterSampler
+):
+    """V10.11 successor with taller primitives and identical XY footprints."""
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V1011B_ENVIRONMENT_VERSION
+    EXPECTED_PRIMITIVE_HEIGHTS_M = {"01": 0.245, "08": 0.180, "09": 0.180}
+
+    def _draw_theta(self):
+        th = super()._draw_theta()
+        palette = {
+            str(item["slot"]): item
+            for item in list(th.get("pact_clutter_palette") or [])
+        }
+        observed = {
+            slot: float(palette[slot]["dimensions_m"][2])
+            for slot in self.EXPECTED_PRIMITIVE_HEIGHTS_M
+        }
+        for slot, expected in self.EXPECTED_PRIMITIVE_HEIGHTS_M.items():
+            if not np.isclose(observed[slot], expected, atol=1e-12, rtol=0.0):
+                raise ValueError(
+                    f"V10.11b slot {slot} height {observed[slot]} != {expected}"
+                )
+        th["pact_v1011b_tall_primitive_heights_m"] = observed
+        th["pact_v1011b_footprints_unchanged"] = True
+        return th
+
+
+class PactPlaceCorridorV1011C33PctTallerPrimitiveSampler(
+    PactPlaceCorridorV1011BTallPrimitiveSampler
+):
+    """V10.11b successor with all three primitive heights scaled by 1.33."""
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V1011C_ENVIRONMENT_VERSION
+    EXPECTED_PRIMITIVE_HEIGHTS_M = {
+        "01": 0.32585,
+        "08": 0.23940,
+        "09": 0.23940,
+    }
+    # V10.11c explicitly amends only the inherited vessel-height ceiling. All
+    # older samplers retain PactPlaceCorridorV9Sampler's 0.25 m maximum.
+    VESSEL_HEIGHT_RANGE_M = (0.15, 0.32585000000000003)
+
+    def _draw_theta(self):
+        # Skip V10.11b's version-specific labelling while retaining V10.11's
+        # exact sampling and layout implementation.
+        th = PactPlaceCorridorV1011MixedClutterSampler._draw_theta(self)
+        palette = {
+            str(item["slot"]): item
+            for item in list(th.get("pact_clutter_palette") or [])
+        }
+        observed = {
+            slot: float(palette[slot]["dimensions_m"][2])
+            for slot in self.EXPECTED_PRIMITIVE_HEIGHTS_M
+        }
+        for slot, expected in self.EXPECTED_PRIMITIVE_HEIGHTS_M.items():
+            if not np.isclose(observed[slot], expected, atol=1e-12, rtol=0.0):
+                raise ValueError(
+                    f"V10.11c slot {slot} height {observed[slot]} != {expected}"
+                )
+        th["pact_v1011c_primitive_heights_m"] = observed
+        th["pact_v1011c_height_multiplier_from_v1011b"] = 1.33
+        th["pact_v1011c_footprints_unchanged"] = True
+        return th
+
+
+class PactPlaceCorridorV1011DRandomizedLayoutSampler(
+    PactPlaceCorridorV1011C33PctTallerPrimitiveSampler
+):
+    """V10.11c clutter, with every clutter item's position randomized.
+
+    V10.11c inherits the frozen V9.5 layout, in which the two plates sit at
+    exactly (0.980, -0.220) and (1.090, +0.300) in all eight family/side
+    combinations and never move, while the two vessels receive only the
+    inherited millimetre-scale jitter. V10.11d keeps the palette, the primitive
+    shapes and every height byte-identical to V10.11c and redraws the centres of
+    slots 01/03/04/06 per episode. Slots 08/09 keep their inherited
+    target-relative annulus and are sampled after these four, so they see the
+    final occupancy.
+
+    Nothing here is free-for-all. Every candidate is rejected unless it stays
+    inside the bench shell, clears every already-placed body and the target, and
+    -- for the route-bearing slot 01 -- still satisfies both registered route
+    predicates. Slot 01's admissible y window is only about 60 mm wide and its
+    sign depends on the panel side, so the predicates are re-evaluated per
+    candidate rather than trusted to a hardcoded box.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = PACT_PLACE_V1011D_ENVIRONMENT_VERSION
+    # Proposal boxes only. The registered predicates below decide admissibility;
+    # these merely bound the proposal distribution.
+    SLOT_RANDOMIZATION_BOXES_M = {
+        # Slot 01's floor is 0.650 rather than the route predicates' wider
+        # admissible span: the two vessels need 98 mm of x separation and slot
+        # 06 cannot go below 0.545 without leaving the bench shell, so a lower
+        # floor here starves slot 06 and the layout fails as a whole.
+        "01": {"x": (0.650, 0.740), "y": (-0.055, 0.055)},
+        "06": {"x": (0.545, 0.600), "y": (-0.050, 0.050)},
+        "03": {"x": (0.920, 1.240), "y": (-0.320, 0.320)},
+        "04": {"x": (0.920, 1.240), "y": (-0.320, 0.320)},
+    }
+    # Most constrained first: a rejected vessel is far more likely than a
+    # rejected plate, and placing it last would waste the plates' draws.
+    RANDOMIZED_SLOT_ORDER = ("01", "06", "03", "04")
+    BASE_MAX_CANDIDATES = 96
+
+    def _randomize_base_slot_centers(self, by_slot, layout) -> dict[str, Any]:
+        from molmo_spaces.data_generation.pact_place.contracts import (
+            panel_corridor_metrics,
+            route_blocker_metrics,
+        )
+
+        # No target-clearance rule is applied here. In a measured V10.11c row
+        # the cup AABB overlaps slot 01's in all three axes -- 55 mm in x and
+        # 15 mm in y -- while the episode still records zero forbidden initial
+        # contact, because the cup mesh and the cylinder do not actually touch.
+        # Any conservative planar separation would therefore reject V10.11c's
+        # own working layout. The runtime settle and initial-contact check stay
+        # the authority for cup/clutter overlap, exactly as in V10.11c.
+        shell_low = np.asarray(self.CLUTTER_WORKSPACE_LOW, dtype=float)
+        shell_high = np.asarray(self.CLUTTER_WORKSPACE_HIGH, dtype=float)
+        placed: list[tuple[np.ndarray, np.ndarray]] = []
+        detail: dict[str, Any] = {
+            "target_clearance_delegated_to_runtime_contact_check": True,
+            "slots": {},
+        }
+        for slot in self.RANDOMIZED_SLOT_ORDER:
+            item = by_slot[slot]
+            half = np.asarray(item["half_m"], dtype=float)
+            box = self.SLOT_RANDOMIZATION_BOXES_M[slot]
+            object_radius = float(np.linalg.norm(half[:2]))
+            rejections: dict[str, int] = {}
+
+            def reject(reason: str) -> None:
+                rejections[reason] = rejections.get(reason, 0) + 1
+
+            for candidate_index in range(self.BASE_MAX_CANDIDATES):
+                x = float(np.random.uniform(*box["x"]))
+                y = float(np.random.uniform(*box["y"]))
+                center = np.asarray(
+                    [x, y, SHELF_TOP_Z + float(half[2])], dtype=float
+                )
+                if np.any(center - half < shell_low - 1e-12) or np.any(
+                    center + half > shell_high + 1e-12
+                ):
+                    reject("escapes_bench_shell")
+                    continue
+                if any(
+                    not self._planar_boxes_separated(
+                        center, half, other_center, other_half,
+                        self.NEAR_OBJECT_GAP_M,
+                    )
+                    for other_center, other_half in placed
+                ):
+                    reject("overlaps_placed_clutter")
+                    continue
+                if slot == "01":
+                    trial = dict(layout)
+                    trial["objects"] = [
+                        {**item, "center_m": center.tolist(), "half_m": half.tolist()}
+                    ]
+                    trial["route_blocker_center_xy_m"] = center[:2].tolist()
+                    try:
+                        route = route_blocker_metrics(trial)
+                        corridor = panel_corridor_metrics(trial)
+                    except ValueError:
+                        reject("route_predicate_raised")
+                        continue
+                    if not route["detour_admitted"]:
+                        reject("closes_nominal_detour")
+                        continue
+                    if not corridor["detour_admitted"]:
+                        reject("closes_panel_corridor")
+                        continue
+                item["center_m"] = center.tolist()
+                placed.append((center, half))
+                detail["slots"][slot] = {
+                    "center_m": center.tolist(),
+                    "candidate_index": candidate_index,
+                    "proposal_box_m": {
+                        "x": list(box["x"]), "y": list(box["y"]),
+                    },
+                    "object_planar_bounding_radius_m": object_radius,
+                    "rejections": dict(rejections),
+                }
+                break
+            else:
+                raise ValueError(
+                    f"V10.11d could not place slot {slot} in "
+                    f"{self.BASE_MAX_CANDIDATES} candidates: {rejections}"
+                )
+        return detail
+
+    def _draw_theta(self):
+        th = PactPlaceCorridorV1011C33PctTallerPrimitiveSampler._draw_theta(self)
+        layout = th.get("pact_clutter_layout") or {}
+        th["pact_place_environment_version"] = self.PACT_PLACE_ENVIRONMENT_VERSION
+        th["pact_v1011d_base_slot_randomization"] = layout.get(
+            "base_slot_randomization"
+        )
+        th["pact_v1011d_randomized_slots"] = list(self.RANDOMIZED_SLOT_ORDER)
+        th["pact_v1011d_all_clutter_randomized"] = True
+        return th
+
+    def _apply_theta(self, env, th):
+        super()._apply_theta(env, th)
+        randomization = th.get("pact_v1011d_base_slot_randomization") or {}
+        placed = set((randomization.get("slots") or {}))
+        expected = set(self.RANDOMIZED_SLOT_ORDER)
+        if placed != expected:
+            raise ValueError(
+                f"V10.11d randomized {sorted(placed)}, expected {sorted(expected)}"
+            )
+
+
 __all__ = [
     "PactPlaceCorridorPolicy",
     "PactPlaceCorridorPolicyConfig",
@@ -2952,6 +3607,10 @@ __all__ = [
     "PactPlaceCorridorV2Sampler",
     "PactPlaceCorridorV93Sampler",
     "PactPlaceCorridorV1010FourObjectSampler",
+    # V10.11a/b are intermediate bases for V10.11c and are deliberately not
+    # exported; only the two qualified endpoints are public.
+    "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
+    "PactPlaceCorridorV1011DRandomizedLayoutSampler",
     "PactPlaceV5Sampler",
     "PactPlaceV95RealClutterSampler",
 ]

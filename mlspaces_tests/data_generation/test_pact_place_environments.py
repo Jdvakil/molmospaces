@@ -236,6 +236,8 @@ def test_public_task_module_does_not_export_failed_variants() -> None:
         "PactPlaceCorridorV2Sampler",
         "PactPlaceCorridorV93Sampler",
         "PactPlaceCorridorV1010FourObjectSampler",
+        "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
+        "PactPlaceCorridorV1011DRandomizedLayoutSampler",
         "PactPlaceV5Sampler",
         "PactPlaceV95RealClutterSampler",
     }
@@ -243,6 +245,14 @@ def test_public_task_module_does_not_export_failed_variants() -> None:
     assert not hasattr(pact_place, "PactPlaceCorridorV98PendantSampler")
     assert not hasattr(pact_place, "PactPlaceCorridorV99PendantSampler")
     assert not hasattr(pact_place, "PactPlaceCorridorV10CompoundPendantSampler")
+    # V10.11a/b are required bases for V10.11c, so they exist on the module but
+    # are not part of the supported surface.
+    for intermediate in (
+        "PactPlaceCorridorV1011MixedClutterSampler",
+        "PactPlaceCorridorV1011BTallPrimitiveSampler",
+    ):
+        assert hasattr(pact_place, intermediate)
+        assert intermediate not in pact_place.__all__
 
 
 def test_reused_sampler_advances_auto_rows_but_never_rewrites_explicit_rows() -> None:
