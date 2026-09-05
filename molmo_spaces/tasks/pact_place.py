@@ -14,6 +14,7 @@ failed geometry variants are intentionally not exposed here.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections import deque
 from pathlib import Path
@@ -30,15 +31,34 @@ from molmo_spaces.configs.policy_configs import (
 from molmo_spaces.data_generation.pact_place.contracts import (
     V107_SPACED_ENVIRONMENT_VERSION,
     V1010_ENVIRONMENT_VERSION,
+    V1011_PREVIEW_BENCH_Z,
+    V1011_PREVIEW_BOTTLE_MIN_X_M,
+    V1011_PREVIEW_CLEAR_PAD_M,
+    V1011_PREVIEW_EMPTY_SPACE_XY,
+    V1011_PREVIEW_ENVIRONMENT_VERSION,
+    V1011_PREVIEW_HOVER_ABOVE_PLACE_M,
+    V1011_PREVIEW_KEEP_BOTTLE,
+    V1011_PREVIEW_LANE_KEEP_HI,
+    V1011_PREVIEW_LANE_KEEP_LO,
+    V1011_PREVIEW_PARK_HOUSEHOLD,
+    V1011_PREVIEW_PICKUP_PAD_M,
+    V1011_PREVIEW_SAFE_X,
+    V1011_PREVIEW_SAFE_Y,
+    V1011_PREVIEW_STAND_QUAT,
+    V1011_PREVIEW_STANDING_KITCHEN,
+    V1011_PREVIEW_TOWARD_ROBOT_DX_M,
+    V1011_PREVIEW_TRAY_WELL_MARGIN_M,
     build_v95_manifest_row,
     build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
+    build_v1011_preview_manifest_row,
     build_v1011c_manifest_row,
     build_v1011d_manifest_row,
     v95_cell,
     v107_spaced_cell,
     v1010_cell,
     v1011_cell,
+    v1011_preview_cell,
 )
 from molmo_spaces.env.env import CPUMujocoEnv
 from molmo_spaces.policy.solvers.object_manipulation.base_object_manipulation_planner_policy import (
@@ -63,6 +83,7 @@ from molmo_spaces.tasks.enclosure_reach import (
 )
 from molmo_spaces.tasks.pick_and_place_task import PickAndPlaceTask
 from molmo_spaces.utils.linalg_utils import transform_to_twist, twist_to_transform
+from molmo_spaces.utils.mj_model_and_data_utils import body_aabb
 from molmo_spaces.utils.object_metadata import ObjectMeta
 from molmo_spaces.utils.pose import pos_quat_to_pose_mat
 
@@ -1555,6 +1576,662 @@ class PactPlaceCorridorV107SpacedBenchSampler(_PactPlaceStaticPendantSampler):
             self._pact_manifest_row = self._auto_manifest_row_for_house(house_index)
             self._pact_auto_house_index = house_index
         return self._pact_manifest_row
+
+
+# Bench height per standing-kitchen UID and yaw, measured once by compiling the
+# asset on its own. Compilation is the expensive part, so it is cached.
+_V12_SIT_Z: dict[str, float] = {}
+
+
+def _v1011_preview_candidate_xy(*, prefer_empty: bool = False) -> tuple[tuple[float, float], ...]:
+    xs = np.arange(0.84, 1.161, 0.08)
+    ys = np.arange(-0.32, 0.301, 0.08)
+    points: list[tuple[float, float]] = []
+    for x in xs:
+        for y in ys:
+            if x <= V1011_PREVIEW_LANE_KEEP_HI[0] and abs(y) < 0.20:
+                continue
+            points.append((float(x), float(y)))
+    # Placement is greedy first-fit down this list, so the order is part of the
+    # published layout: hand-picked pockets first, then outermost-then-deepest.
+    points.sort(key=lambda point: (-abs(point[1]), -point[0]))
+    del prefer_empty
+    return tuple(dict.fromkeys((*V1011_PREVIEW_EMPTY_SPACE_XY, *points)))
+
+
+def _v1011_preview_is_parked_household(body_name: str) -> bool:
+    return body_name.split("/")[-1] in V1011_PREVIEW_PARK_HOUSEHOLD
+
+
+def _v1011_preview_free_qpos(model: mujoco.MjModel, body_name: str) -> tuple[int, int] | None:
+    body_id = int(model.body(body_name).id)
+    joint_adr = int(model.body_jntadr[body_id])
+    for joint_offset in range(int(model.body_jntnum[body_id])):
+        joint_id = joint_adr + joint_offset
+        if int(model.jnt_type[joint_id]) != int(mujoco.mjtJoint.mjJNT_FREE):
+            continue
+        return int(model.jnt_qposadr[joint_id]), int(model.jnt_dofadr[joint_id])
+    return None
+
+
+def _v1011_preview_park_household(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    for body_id in range(int(model.nbody)):
+        body_name = model.body(body_id).name or ""
+        if not _v1011_preview_is_parked_household(body_name):
+            continue
+        addresses = _v1011_preview_free_qpos(model, body_name)
+        if addresses is None:
+            continue
+        qadr, dadr = addresses
+        data.qpos[qadr : qadr + 3] = (0.0, 2.5, -1.0)
+        data.qvel[dadr : dadr + 6] = 0.0
+
+
+def _v1011_preview_shift_kept_bottle_toward_robot(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    cup = _v1011_preview_grasp_target_xy(model, data)
+    for body_id in range(int(model.nbody)):
+        body_name = model.body(body_id).name or ""
+        if V1011_PREVIEW_KEEP_BOTTLE not in body_name or not body_name.startswith("pact_clutter_"):
+            continue
+        addresses = _v1011_preview_free_qpos(model, body_name)
+        if addresses is None:
+            continue
+        qadr, dadr = addresses
+        current_x = float(data.qpos[qadr])
+        if cup is not None:
+            target_x = float(cup[0]) + V1011_PREVIEW_TOWARD_ROBOT_DX_M
+        else:
+            target_x = current_x + V1011_PREVIEW_TOWARD_ROBOT_DX_M
+        data.qpos[qadr] = max(V1011_PREVIEW_BOTTLE_MIN_X_M, target_x)
+        data.qvel[dadr : dadr + 6] = 0.0
+
+
+def _v1011_preview_apply_preview_household(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """Park the outbound soap bottle; keep one bottle on the robot side of the cup."""
+    _v1011_preview_park_household(model, data)
+    _v1011_preview_shift_kept_bottle_toward_robot(model, data)
+    mujoco.mj_forward(model, data)
+
+
+def _v1011_preview_refresh_clutter_settle(
+    scene_params: dict[str, Any] | None, model: mujoco.MjModel, data: mujoco.MjData
+) -> None:
+    """Drop parked bottles from the topple gate; retarget the kept bottle."""
+    scene = scene_params or {}
+    settle = scene.get("pact_clutter_settle")
+    if not isinstance(settle, dict):
+        return
+    updated = []
+    for record in settle.get("objects") or []:
+        body = str(record.get("body") or "")
+        if _v1011_preview_is_parked_household(body):
+            continue
+        body_id = int(model.body(body).id)
+        item = dict(record)
+        item["position_m"] = np.asarray(data.xpos[body_id], dtype=float).tolist()
+        item["xmat"] = np.asarray(data.xmat[body_id], dtype=float).tolist()
+        updated.append(item)
+    settle["objects"] = updated
+
+
+def _v1011_preview_install_uid(uid: str) -> Path:
+    from molmo_spaces.utils.lazy_loading_utils import install_uid
+
+    return Path(install_uid(uid))
+
+
+def _v1011_preview_stand_quat(yaw_deg: float = 0.0) -> list[float]:
+    from scipy.spatial.transform import Rotation as R
+
+    quat = (
+        R.from_euler("z", float(yaw_deg), degrees=True)
+        * R.from_euler("x", 90.0, degrees=True)
+    ).as_quat(scalar_first=True)
+    return [float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])]
+
+
+def _v1011_preview_sit_on_bench(
+    uid: str, xy: tuple[float, float], *, yaw_deg: float = 0.0
+) -> tuple[list[float], list[float]]:
+    key = f"{uid}:{float(yaw_deg):.1f}"
+    if key not in _V12_SIT_Z:
+        spec = mujoco.MjSpec.from_file(str(_v1011_preview_install_uid(uid)))
+        body = spec.worldbody.bodies[0]
+        for joint in list(spec.joints):
+            if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                spec.delete(joint)
+        body.quat = _v1011_preview_stand_quat(yaw_deg)
+        model = spec.compile()
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        low, _high = _v1011_preview_subtree_aabb(model, data, body.name, hull="primitive")
+        _V12_SIT_Z[key] = V1011_PREVIEW_BENCH_Z - float(low[2]) + 0.001
+    return [float(xy[0]), float(xy[1]), _V12_SIT_Z[key]], _v1011_preview_stand_quat(yaw_deg)
+
+
+def _v1011_preview_attach_standing_kitchen(spec: mujoco.MjSpec) -> list[str]:
+    names: list[str] = []
+    for index, item in enumerate(V1011_PREVIEW_STANDING_KITCHEN):
+        extra = mujoco.MjSpec.from_file(str(_v1011_preview_install_uid(item["uid"])))
+        body = extra.worldbody.bodies[0]
+        for joint in list(extra.joints):
+            if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                extra.delete(joint)
+        body.quat = list(V1011_PREVIEW_STAND_QUAT)
+        body.mocap = True
+        # Park off the bench so household objects can settle first.
+        frame = spec.worldbody.add_frame(pos=[0.0, 2.5 + 0.25 * index, -1.0])
+        namespace = f"pact_preview_extra_{item['uid']}/"
+        original_name = body.name
+        frame.attach_body(body, namespace, "")
+        names.append(namespace + original_name)
+    return names
+
+
+def _v1011_preview_install_preview_contact_classes() -> None:
+    """Score standing-kitchen extras as clutter, not other_environment."""
+    import molmo_spaces.tasks.pact_place_contact_audit as audit
+
+    if getattr(audit, "_pact_preview_extra_contact_patched", False):
+        return
+    original = audit.classify_contact
+    original_is_clutter = audit._is_clutter_name
+
+    def classify_contact(pair):
+        blob = " ".join(
+            str(pair.get(key, ""))
+            for key in ("geom1", "geom2", "body1", "body2", "root1", "root2")
+        )
+        if "pact_preview_extra_" in blob:
+            return "clutter"
+        return original(pair)
+
+    def is_clutter_name(name: str) -> bool:
+        return original_is_clutter(name) or "pact_preview_extra_" in str(name)
+
+    audit.classify_contact = classify_contact
+    audit._is_clutter_name = is_clutter_name
+    audit._pact_preview_extra_contact_patched = True
+
+
+def _v1011_preview_lane_keepout() -> tuple[np.ndarray, np.ndarray]:
+    return np.asarray(V1011_PREVIEW_LANE_KEEP_LO, dtype=float), np.asarray(V1011_PREVIEW_LANE_KEEP_HI, dtype=float)
+
+
+def _v1011_preview_geom_aabb(
+    model: mujoco.MjModel, data: mujoco.MjData, geom_id: int
+) -> tuple[np.ndarray, np.ndarray]:
+    center = np.asarray(data.geom_xpos[geom_id], dtype=float)
+    if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_BOX):
+        axes = np.asarray(data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
+        half = np.asarray(model.geom_size[geom_id], dtype=float)
+        corners = [
+            center + axes @ (half * np.array([sx, sy, sz], dtype=float))
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ]
+        stacked = np.stack(corners)
+        return stacked.min(axis=0), stacked.max(axis=0)
+    radius = max(float(model.geom_rbound[geom_id]), 0.01)
+    return center - radius, center + radius
+
+
+def _v1011_preview_subtree_aabb(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    body_name: str,
+    *,
+    skip_primitive: bool = False,
+    hull: str = "auto",
+) -> tuple[np.ndarray, np.ndarray]:
+    """AABB of a body. Default hull is PrimitiveCollider boxes (tight THOR hull)."""
+    if hull == "auto":
+        hull = "visual" if skip_primitive else "primitive"
+    root = int(model.body(body_name).id)
+    lows: list[np.ndarray] = []
+    highs: list[np.ndarray] = []
+    for geom_id in range(int(model.ngeom)):
+        geom_name = model.geom(geom_id).name or ""
+        is_prim = "PrimitiveCollider" in geom_name
+        if hull == "primitive" and not is_prim:
+            continue
+        if hull == "visual" and is_prim:
+            continue
+        if hull != "primitive" and int(model.geom_contype[geom_id]) == 0:
+            continue
+        walk = int(model.geom_bodyid[geom_id])
+        while walk and walk != root:
+            walk = int(model.body_parentid[walk])
+        if walk != root:
+            continue
+        low, high = _v1011_preview_geom_aabb(model, data, geom_id)
+        lows.append(low)
+        highs.append(high)
+    if not lows and hull == "primitive":
+        return _v1011_preview_subtree_aabb(model, data, body_name, hull="collision")
+    if not lows:
+        origin = np.asarray(data.xpos[root], dtype=float)
+        return origin, origin
+    return np.min(np.stack(lows), axis=0), np.max(np.stack(highs), axis=0)
+
+
+def _v1011_preview_aabbs_overlap(
+    left_lo: np.ndarray,
+    left_hi: np.ndarray,
+    right_lo: np.ndarray,
+    right_hi: np.ndarray,
+    pad: float = 0.01,
+) -> bool:
+    return bool(np.all(left_lo < right_hi + pad) and np.all(right_lo < left_hi + pad))
+
+
+def _v1011_preview_household_boxes(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    *,
+    include_lane: bool = True,
+    include_pickup: bool = True,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    boxes: list[tuple[np.ndarray, np.ndarray]] = []
+    for body_id in range(int(model.nbody)):
+        name = model.body(body_id).name or ""
+        if not name.startswith("pact_clutter_"):
+            continue
+        if _v1011_preview_is_parked_household(name):
+            continue
+        if "/" not in name or name.count("/") != 1:
+            continue
+        boxes.append(_v1011_preview_subtree_aabb(model, data, name, hull="primitive"))
+    for geom_name in ("hood_back", "hood_side_l", "hood_side_r"):
+        boxes.append(_v1011_preview_geom_aabb(model, data, int(model.geom(geom_name).id)))
+    for site_id in range(int(model.nsite)):
+        name = model.site(site_id).name or ""
+        if "ReceptacleCollider" not in name:
+            continue
+        body_name = model.body(int(model.site_bodyid[site_id])).name or ""
+        if "cavity_obj_" in body_name:
+            continue
+        center = np.asarray(data.site_xpos[site_id], dtype=float)
+        axes = np.asarray(data.site_xmat[site_id], dtype=float).reshape(3, 3)
+        half = np.asarray(model.site_size[site_id], dtype=float)
+        corners = [
+            center + axes @ (half * np.array([sx, sy, sz], dtype=float))
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ]
+        stacked = np.stack(corners)
+        boxes.append((stacked.min(axis=0), stacked.max(axis=0)))
+    pad = np.array([V1011_PREVIEW_PICKUP_PAD_M, V1011_PREVIEW_PICKUP_PAD_M, V1011_PREVIEW_PICKUP_PAD_M], dtype=float)
+    if include_pickup:
+        for body_id in range(int(model.nbody)):
+            name = model.body(body_id).name or ""
+            if not name.startswith("cavity_obj_") or name.count("/") != 1:
+                continue
+            low, high = _v1011_preview_subtree_aabb(model, data, name, hull="primitive")
+            boxes.append((low - pad, high + pad))
+    for geom_name in (
+        "place_receptacle_floor_g",
+        "place_receptacle_lip_left_g",
+        "place_receptacle_lip_right_g",
+    ):
+        try:
+            boxes.append(_v1011_preview_geom_aabb(model, data, int(model.geom(geom_name).id)))
+        except Exception:
+            continue
+    if include_lane:
+        boxes.append(_v1011_preview_lane_keepout())
+    return boxes
+
+
+def _v1011_preview_aabb_inside_safe(low: np.ndarray, high: np.ndarray) -> bool:
+    return bool(
+        low[0] >= V1011_PREVIEW_SAFE_X[0]
+        and high[0] <= V1011_PREVIEW_SAFE_X[1]
+        and low[1] >= V1011_PREVIEW_SAFE_Y[0]
+        and high[1] <= V1011_PREVIEW_SAFE_Y[1]
+    )
+
+
+def _v1011_preview_snap_to_bench(model: mujoco.MjModel, data: mujoco.MjData, name: str) -> None:
+    mocap_id = int(model.body_mocapid[int(model.body(name).id)])
+    mujoco.mj_forward(model, data)
+    low, _high = _v1011_preview_subtree_aabb(model, data, name, hull="primitive")
+    data.mocap_pos[mocap_id, 2] += V1011_PREVIEW_BENCH_Z + 0.001 - float(low[2])
+    mujoco.mj_forward(model, data)
+
+
+def _v1011_preview_grasp_target_xy(
+    model: mujoco.MjModel, data: mujoco.MjData
+) -> tuple[float, float] | None:
+    for body_id in range(int(model.nbody)):
+        name = model.body(body_id).name or ""
+        if not name.startswith("cavity_obj_") or name.count("/") != 1:
+            continue
+        pos = data.xpos[body_id]
+        return float(pos[0]), float(pos[1])
+    return None
+
+
+def _v1011_preview_place_standing_kitchen(
+    model: mujoco.MjModel, data: mujoco.MjData, names: list[str]
+) -> list[str]:
+    blocked = _v1011_preview_household_boxes(model, data)
+    placed: list[str] = []
+    used_xy: set[tuple[float, float]] = set()
+    for name, item in zip(names, V1011_PREVIEW_STANDING_KITCHEN, strict=True):
+        slots = _v1011_preview_candidate_xy(prefer_empty=bool(item.get("prefer_empty")))
+        mocap_id = int(model.body_mocapid[int(model.body(name).id)])
+        if mocap_id < 0:
+            raise RuntimeError(f"{name} is not a mocap body")
+        chosen: tuple[float, float] | None = None
+        yaw_deg = float(item.get("yaw_deg", 0.0))
+        pinned: list[tuple[float, float]] = []
+        if item.get("behind_grasp"):
+            target = _v1011_preview_grasp_target_xy(model, data)
+            if target is not None:
+                for dx in (0.14, 0.16, 0.12, 0.18, 0.10):
+                    pinned.append((float(target[0] + dx), float(target[1])))
+        if "xy" in item:
+            pinned.append(tuple(item["xy"]))
+        # Behind the cup must not fall back to a wall slot.
+        slots = tuple(pinned) if item.get("behind_grasp") else tuple(pinned) + slots
+        obstacles = (
+            _v1011_preview_household_boxes(model, data, include_lane=False, include_pickup=False)
+            if item.get("behind_grasp")
+            else blocked
+        )
+        for xy in slots:
+            if xy in used_xy:
+                continue
+            pos, quat = _v1011_preview_sit_on_bench(item["uid"], xy, yaw_deg=yaw_deg)
+            data.mocap_pos[mocap_id][:] = np.asarray(pos, dtype=np.float64)
+            data.mocap_quat[mocap_id][:] = np.asarray(quat, dtype=np.float64)
+            mujoco.mj_forward(model, data)
+            _v1011_preview_snap_to_bench(model, data, name)
+            low, high = _v1011_preview_subtree_aabb(model, data, name, hull="primitive")
+            if not _v1011_preview_aabb_inside_safe(low, high):
+                continue
+            if any(
+                _v1011_preview_aabbs_overlap(low, high, other_lo, other_hi, V1011_PREVIEW_CLEAR_PAD_M)
+                for other_lo, other_hi in obstacles
+            ):
+                continue
+            chosen = xy
+            break
+        if chosen is None and item.get("behind_grasp") and pinned:
+            xy = pinned[0]
+            pos, quat = _v1011_preview_sit_on_bench(item["uid"], xy, yaw_deg=yaw_deg)
+            data.mocap_pos[mocap_id][:] = np.asarray(pos, dtype=np.float64)
+            data.mocap_quat[mocap_id][:] = np.asarray(quat, dtype=np.float64)
+            mujoco.mj_forward(model, data)
+            _v1011_preview_snap_to_bench(model, data, name)
+            chosen = xy
+        if chosen is None:
+            data.mocap_pos[mocap_id][:] = np.asarray([0.0, 2.5, -1.0], dtype=np.float64)
+            mujoco.mj_forward(model, data)
+            continue
+        used_xy.add(chosen)
+        blocked.append(_v1011_preview_subtree_aabb(model, data, name, hull="primitive"))
+        placed.append(name)
+    return placed
+
+
+def _v1011_preview_extras_overlap_motion_lane(
+    model: mujoco.MjModel, data: mujoco.MjData, names: list[str]
+) -> list[str]:
+    lane_lo, lane_hi = _v1011_preview_lane_keepout()
+    hits: list[str] = []
+    for name in names:
+        low, high = _v1011_preview_subtree_aabb(model, data, name, hull="primitive")
+        if _v1011_preview_aabbs_overlap(low, high, lane_lo, lane_hi, 0.0):
+            hits.append(name)
+    return hits
+
+
+def _v1011_preview_hide_primitive_colliders(model: mujoco.MjModel) -> None:
+    for geom_id in range(int(model.ngeom)):
+        name = model.geom(geom_id).name or ""
+        if "PrimitiveCollider" in name:
+            model.geom_rgba[geom_id, 3] = 0.0
+
+
+def _v1011_preview_install_preview_layout(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    extra_bodies: list[str],
+    scene_params: dict[str, Any] | None = None,
+) -> list[str]:
+    _v1011_preview_hide_primitive_colliders(model)
+    _v1011_preview_apply_preview_household(model, data)
+    _v1011_preview_refresh_clutter_settle(scene_params, model, data)
+    placed = _v1011_preview_place_standing_kitchen(model, data, extra_bodies)
+    mujoco.mj_forward(model, data)
+    extra_bodies[:] = placed
+    return placed
+
+
+def _v1011_preview_tray_inner_half_xy(model: mujoco.MjModel) -> np.ndarray:
+    floor = int(model.geom("place_receptacle_floor_g").id)
+    half = np.asarray(model.geom_size[floor, :2], dtype=float).copy()
+    try:
+        lip = int(model.geom("place_receptacle_lip_left_g").id)
+    except Exception:
+        return half
+    lip_y = abs(float(model.geom_pos[lip, 1])) - float(model.geom_size[lip, 1])
+    if lip_y > 0.0:
+        half[1] = min(half[1], lip_y)
+    return half
+
+
+def _v1011_preview_aabb_corners(center: np.ndarray, size: np.ndarray) -> np.ndarray:
+    half = 0.5 * np.asarray(size, dtype=float)
+    center = np.asarray(center, dtype=float)
+    corners = []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                corners.append(center + (sx * half[0], sy * half[1], sz * half[2]))
+    return np.asarray(corners, dtype=float)
+
+
+def _v1011_preview_shift_place_xy_into_tray(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    grasp_pose_world: np.ndarray,
+    pickup_obj,
+    place: np.ndarray,
+) -> np.ndarray:
+    floor_id = int(model.geom("place_receptacle_floor_g").id)
+    floor_xy = np.asarray(data.geom_xpos[floor_id, :2], dtype=float)
+    inner_half = _v1011_preview_tray_inner_half_xy(model) - V1011_PREVIEW_TRAY_WELL_MARGIN_M
+    inner_half = np.maximum(inner_half, 0.02)
+    body_id = int(pickup_obj.object_id)
+    aabb_c, aabb_s = body_aabb(model, data, body_id, visual_only=False)
+    obj_pose = np.eye(4)
+    obj_pose[:3, 3] = np.asarray(data.xpos[body_id], dtype=float)
+    obj_pose[:3, :3] = np.asarray(data.xmat[body_id], dtype=float).reshape(3, 3)
+    obj_at_place = place @ np.linalg.inv(grasp_pose_world) @ obj_pose
+    rel = obj_at_place @ np.linalg.inv(obj_pose)
+    corners = _v1011_preview_aabb_corners(aabb_c, aabb_s)
+    placed = (rel[:3, :3] @ corners.T).T + rel[:3, 3]
+    min_xy = placed[:, :2].min(axis=0)
+    max_xy = placed[:, :2].max(axis=0)
+    shift = np.zeros(2, dtype=float)
+    for axis in (0, 1):
+        lo = float(floor_xy[axis] - inner_half[axis])
+        hi = float(floor_xy[axis] + inner_half[axis])
+        if min_xy[axis] < lo:
+            shift[axis] += lo - min_xy[axis]
+        if max_xy[axis] > hi:
+            shift[axis] += hi - max_xy[axis]
+    return shift
+
+
+def _v1011_preview_keep_glass_inside_blue_tray(policy) -> None:
+    original_placement = policy._get_placement_poses
+    original_traj = policy._compute_trajectory
+
+    def _tcp_primitives(primitives):
+        for prim in primitives:
+            segs = getattr(prim, "_move_segments", None)
+            if segs:
+                yield prim, list(segs)
+
+    def _refresh_duration(prim) -> None:
+        segs = getattr(prim, "_move_segments", None) or []
+        if segs:
+            prim.duration = float(sum(seg.duration for seg in segs))
+
+    def _get_placement_poses(grasp_pose_world, pickup_obj, place_receptacle):
+        preplace, place, postplace = original_placement(
+            grasp_pose_world, pickup_obj, place_receptacle
+        )
+        preplace = preplace.copy()
+        place = place.copy()
+        postplace = postplace.copy()
+        model, data = policy.task.env.current_model, policy.task.env.current_data
+        shift_xy = _v1011_preview_shift_place_xy_into_tray(
+            model, data, grasp_pose_world, pickup_obj, place
+        )
+        for pose in (preplace, place, postplace):
+            pose[:2, 3] = pose[:2, 3] + shift_xy
+        preplace[2, 3] = float(place[2, 3]) + V1011_PREVIEW_HOVER_ABOVE_PLACE_M
+        if not policy.check_feasible_ik(place):
+            raise ValueError("IK failed for tray-inset place pose")
+        if not policy.check_feasible_ik(preplace):
+            raise ValueError("IK failed for hover preplace pose")
+        log.info(
+            json.dumps(
+                {
+                    "tray_place_wrap": "hover_then_vertical_drop",
+                    "place_xy_m": [float(place[0, 3]), float(place[1, 3])],
+                    "place_z_m": float(place[2, 3]),
+                    "preplace_z_m": float(preplace[2, 3]),
+                    "footprint_shift_xy_m": [float(shift_xy[0]), float(shift_xy[1])],
+                }
+            )
+        )
+        return preplace, place, postplace
+
+    def _compute_trajectory():
+        primitives = original_traj()
+        place_prim = None
+        preplace = descent = None
+        for prim, segs in _tcp_primitives(primitives):
+            for seg in segs:
+                name = str(getattr(seg, "name", "") or "")
+                if name == "preplace":
+                    place_prim = prim
+                    preplace = seg
+                elif name == "placement_descent":
+                    place_prim = prim
+                    descent = seg
+        if preplace is None or descent is None:
+            return primitives
+        hover = descent.end_pose.copy()
+        hover[:2, 3] = descent.end_pose[:2, 3]
+        hover[2, 3] = max(
+            float(preplace.start_pose[2, 3]),
+            float(descent.end_pose[2, 3]) + V1011_PREVIEW_HOVER_ABOVE_PLACE_M,
+        )
+        if not policy.check_feasible_ik(hover):
+            hover[2, 3] = float(descent.end_pose[2, 3]) + V1011_PREVIEW_HOVER_ABOVE_PLACE_M
+            if not policy.check_feasible_ik(hover):
+                raise ValueError("IK failed for vertical-drop hover pose")
+        inbound_z = float(hover[2, 3])
+        for _prim, segs in _tcp_primitives(primitives):
+            for index, seg in enumerate(segs):
+                name = str(getattr(seg, "name", "") or "")
+                if name == "preplace":
+                    start = seg.start_pose.copy()
+                    start[2, 3] = inbound_z
+                    if policy.check_feasible_ik(start):
+                        seg.start_pose = start
+                    seg.end_pose = hover.copy()
+                    if index > 0:
+                        prev = segs[index - 1]
+                        prev_end = prev.end_pose.copy()
+                        prev_end[2, 3] = inbound_z
+                        if policy.check_feasible_ik(prev_end):
+                            prev.end_pose = prev_end
+                            seg.start_pose = prev_end.copy()
+                elif name == "placement_descent":
+                    start = hover.copy()
+                    start[:2, 3] = seg.end_pose[:2, 3]
+                    seg.start_pose = start
+                    if index > 0:
+                        segs[index - 1].end_pose = start.copy()
+        if place_prim is not None:
+            _refresh_duration(place_prim)
+        log.info(
+            json.dumps(
+                {
+                    "tray_drop": "vertical",
+                    "hover_xyz_m": [float(v) for v in hover[:3, 3]],
+                    "place_xyz_m": [float(v) for v in descent.end_pose[:3, 3]],
+                    "preplace_start_xyz_m": [float(v) for v in preplace.start_pose[:3, 3]],
+                    "preplace_end_xyz_m": [float(v) for v in preplace.end_pose[:3, 3]],
+                }
+            )
+        )
+        return primitives
+
+    policy._get_placement_poses = _get_placement_poses  # type: ignore[method-assign]
+    policy._compute_trajectory = _compute_trajectory  # type: ignore[method-assign]
+
+
+class PactPlaceCorridorV1011PreviewOneBottleSampler(PactPlaceCorridorV1010FourObjectSampler):
+    """V12 preview bench: the V10.10 four-object row plus ten standing extras.
+
+    The V10.10 household is edited down to one inbound bottle pulled toward the
+    robot, and ten kitchen meshes are stood on the bench as mocap bodies. Their
+    XY comes from a greedy first-fit against live geometry rather than from the
+    manifest row, so the candidate ordering in ``_v1011_preview_candidate_xy`` and the
+    per-item order of ``V1011_PREVIEW_STANDING_KITCHEN`` are part of the environment.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = V1011_PREVIEW_ENVIRONMENT_VERSION
+
+    @staticmethod
+    def _auto_manifest_row_for_house(house_index: int) -> dict[str, Any]:
+        return build_v1011_preview_manifest_row(*v1011_preview_cell(house_index))
+
+    def _ensure_manifest_row(self) -> dict[str, Any]:
+        if self._pact_manifest_row_is_explicit:
+            return self._pact_manifest_row or {}
+        try:
+            house_index = int(self.current_house_index)
+        except (AttributeError, TypeError, ValueError):
+            house_index = 0
+        if self._pact_manifest_row is None or self._pact_auto_house_index != house_index:
+            self._pact_manifest_row = self._auto_manifest_row_for_house(house_index)
+            self._pact_auto_house_index = house_index
+        return self._pact_manifest_row
+
+    def add_auxiliary_objects(self, spec: MjSpec) -> None:
+        super().add_auxiliary_objects(spec)
+        self._v1011_preview_extra_bodies = _v1011_preview_attach_standing_kitchen(spec)
+        # Placement later narrows the list to what fit. Keep every attached body
+        # so a short bench can be told apart from a failed attach.
+        self._v1011_preview_attached_bodies = list(self._v1011_preview_extra_bodies)
+
+    def _sample_task(self, env: CPUMujocoEnv):
+        task = super()._sample_task(env)
+        extra_bodies = getattr(self, "_v1011_preview_extra_bodies", None)
+        if task is None or not extra_bodies:
+            return task
+        # The household is edited only once the task exists, which is the order
+        # the published collection used. Parking a bottle two metres away during
+        # _apply_theta would instead trip the inherited settle drift check.
+        _v1011_preview_install_preview_layout(
+            env.current_model,
+            env.current_data,
+            extra_bodies,
+            getattr(task, "scene_params", None),
+        )
+        return task
 
 
 # The published manifests for data/v107_spaced record the sampler under its
@@ -3710,6 +4387,7 @@ __all__ = [
     "PactPlaceCorridorV2Sampler",
     "PactPlaceCorridorV93Sampler",
     "PactPlaceCorridorV107SpacedBenchSampler",
+    "PactPlaceCorridorV1011PreviewOneBottleSampler",
     "PactPlaceCorridorV1010FourObjectSampler",
     # V10.11a/b are intermediate bases for V10.11c and are deliberately not
     # exported; only the two qualified endpoints are public.

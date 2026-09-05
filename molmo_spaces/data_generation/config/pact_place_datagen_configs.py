@@ -4,6 +4,7 @@ from pathlib import Path
 
 from molmo_spaces.configs import BasePolicyConfig
 from molmo_spaces.configs.camera_configs import (
+    FrankaSkinHybridCameraSystem,
     FrankaSkinHybridWristOnlyCameraSystem,
 )
 from molmo_spaces.configs.task_configs import PickAndPlaceTaskConfig
@@ -14,7 +15,9 @@ from molmo_spaces.data_generation.config.object_manipulation_datagen_configs imp
 from molmo_spaces.data_generation.config_registry import register_config
 from molmo_spaces.data_generation.pact_place.contracts import (
     V1010_SCENE_BY_POSE,
+    V1011_PREVIEW_SCENE,
     v1010_cell,
+    v1011_preview_cells,
 )
 from molmo_spaces.molmo_spaces_constants import ASSETS_DIR
 from molmo_spaces.tasks.pact_place import (
@@ -23,6 +26,7 @@ from molmo_spaces.tasks.pact_place import (
     PactPlaceCorridorV107SpacedBenchSampler,
     PactPlaceCorridorV1010FourObjectSampler,
     PactPlaceCorridorV1011C33PctTallerPrimitiveSampler,
+    PactPlaceCorridorV1011PreviewOneBottleSampler,
     PactPlaceCorridorV1011DRandomizedLayoutSampler,
     PactPlaceV5Sampler,
     PactPlaceV95RealClutterSampler,
@@ -130,6 +134,28 @@ class FrankaSkinPactPlaceV107SpacedBenchConfig(_PactPlaceBaseConfig):
         return "franka_skin_pact_place_v107_spaced_bench"
 
 
+@register_config("FrankaSkinPactPlaceV1011PreviewOneBottleConfig")
+class FrankaSkinPactPlaceV1011PreviewOneBottleConfig(_PactPlaceBaseConfig):
+    """V10.11 preview: one inbound bottle, ten kitchen objects standing behind it.
+
+    Published on the hub as ``data/v12``. Unlike the other lineages this one
+    records the table camera as well as the wrist, because the released
+    episodes carry ``exo_camera_1`` streams.
+    """
+
+    task_horizon: int | None = 1050
+    camera_config: FrankaSkinHybridCameraSystem = FrankaSkinHybridCameraSystem()
+    task_sampler_config: PickTaskSamplerConfig = _sampler_config(
+        PactPlaceCorridorV1011PreviewOneBottleSampler,
+        [str(_CUSTOM_SCENES / V1011_PREVIEW_SCENE["filename"])] * len(v1011_preview_cells()),
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pact_place_v1011_preview_onebottle"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pact_place_v1011_preview_onebottle"
+
+
 @register_config("FrankaSkinPactPlaceV1010FourObjectConfig")
 class FrankaSkinPactPlaceV1010FourObjectConfig(_PactPlaceBaseConfig):
     """V10.10: V9.5 chicane, four live objects and one static pendant."""
@@ -185,4 +211,5 @@ __all__ = [
     "FrankaSkinPactPlaceV1010FourObjectConfig",
     "FrankaSkinPactPlaceV1011CMixedClutterConfig",
     "FrankaSkinPactPlaceV1011DRandomizedClutterConfig",
+    "FrankaSkinPactPlaceV1011PreviewOneBottleConfig",
 ]

@@ -13,6 +13,7 @@ variants.
 | `FrankaSkinPactPlaceV95RealClutterConfig` | V9.5 real-clutter lineage | V5 shell, active left/right panel, eight movable Objaverse household objects, including two route-bearing bottles | 8 |
 | `FrankaSkinPactPlaceV107SpacedBenchConfig` | V10.7 spaced bench | V10.10 pendant scenes with all eight palette slots live, spread across the bench as naturally tall standing objects | 24 |
 | `FrankaSkinPactPlaceV1010FourObjectConfig` | V10.10 | V9.5 route layout with four live household objects and a two-lobe static pendant | 24 |
+| `FrankaSkinPactPlaceV1011PreviewOneBottleConfig` | V10.11 preview (one bottle) | V10.10 route with the household cut to a single inbound bottle pulled toward the robot, plus ten kitchen objects standing on the bench | 8 |
 | `FrankaSkinPactPlaceV1011CMixedClutterConfig` | V10.11c | Six live bodies: three mesh props and three runtime MuJoCo primitives, two of them sampled near the target | 24 |
 | `FrankaSkinPactPlaceV1011DRandomizedClutterConfig` | V10.11d | V10.11c clutter with every clutter position redrawn per episode | 24 |
 
@@ -87,6 +88,34 @@ predicates on every candidate because its admissible lateral window is roughly
 60 mm wide and its sign depends on the panel side. The clutter identity is
 unchanged from V10.11c.
 
+The V10.11 preview is the one environment here whose bench is not fully
+described by its manifest row. Its row is the V10.10 row over a scene that only
+wraps `pact_place_corridor_v10_7_center.xml`, so families, sides, jitter and the
+route layout are inherited unchanged, and it is published at the centre pose
+only, giving eight cells. What it adds happens at sample time: three of the four
+live household objects are parked off the bench, the surviving inbound bottle
+(`Soap_Bottle_11`) is pulled 0.15 m toward the robot, and ten kitchen meshes are
+stood on the bench as mocap bodies.
+
+Those ten are positioned by a greedy first-fit against live geometry rather than
+from frozen coordinates, so the ordering of `V1011_PREVIEW_STANDING_KITCHEN` and
+of the candidate slots in `_v1011_preview_candidate_xy` is part of the
+environment definition, not an implementation detail. A candidate is rejected if
+it leaves the safe bench box, overlaps an already-placed body, or intrudes on the
+arm's motion lane. Objects that find no slot are parked off the bench instead of
+being dropped, so a run that stands seven of the ten is expected rather than a
+failure. `Soap_Bottle_1` is pinned just behind the grasp target so the arm always
+has something to sense on approach.
+
+This lineage also differs in what it records. It is the only one that keeps the
+table camera (`exo_camera_1`) alongside the wrist, because the published
+episodes carry those streams. On the hub it appears as `data/v12`; that tag is a
+release label, and the environment's own marker is
+`pact_place_corridor_v10_11_preview_onebottle`. Its published manifests record
+`sampler_class` as `PactPlaceCorridorV1010FourObjectSampler`, since the released
+episodes were collected by overlaying that sampler rather than by subclassing
+it, and that value is preserved so those manifests still resolve.
+
 ## Setup
 
 Follow the repository's normal MuJoCo installation instructions, then point
@@ -126,6 +155,10 @@ python -m molmo_spaces.data_generation.main \
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1010FourObjectConfig
 
+# V10.11 preview: one inbound bottle plus a standing kitchen, table camera on.
+python -m molmo_spaces.data_generation.main \
+  molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1011PreviewOneBottleConfig
+
 # V10.11c: six live bodies, three of them primitives.
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1011CMixedClutterConfig
@@ -138,7 +171,7 @@ python -m molmo_spaces.data_generation.main \
 Each command creates a timestamped directory under the config's `output_dir`.
 The public configs disable action noise, texture randomization, and lighting
 randomization, and expose the wrist RGB/depth camera plus all 40 proximity
-sensors. Their default `samples_per_house=1` makes the commands above small
+sensors; the V10.11 preview additionally records the table camera. Their default `samples_per_house=1` makes the commands above small
 smoke/inspection runs. Increase `samples_per_house` in a derived config for a
 larger collection rather than duplicating scene paths.
 

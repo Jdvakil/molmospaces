@@ -306,6 +306,57 @@ def test_v1010_speed_amendment_changes_only_the_first_free_space_segment() -> No
     assert comparison["n_speed_changes"] == 1
 
 
+def test_v1011_preview_is_the_v1010_row_over_the_preview_scene() -> None:
+    """The preview must not silently fall back to an ancestor's row.
+
+    Its sampler overrides both row hooks. If either is dropped it inherits a
+    V9.5 or V10.10 row, still samples cleanly, and quietly collects the wrong
+    environment, which no other assertion here would catch.
+    """
+    from molmo_spaces.data_generation.pact_place.contracts import (
+        V1011_PREVIEW_ENVIRONMENT_VERSION,
+        V1011_PREVIEW_KEEP_BOTTLE,
+        V1011_PREVIEW_SCENE,
+        V1011_PREVIEW_STANDING_KITCHEN,
+        build_v1010_manifest_row,
+        build_v1011_preview_manifest_row,
+        v1011_preview_cells,
+    )
+    from molmo_spaces.tasks.pact_place import (
+        PactPlaceCorridorV1011PreviewOneBottleSampler,
+    )
+
+    cells = v1011_preview_cells()
+    assert len(cells) == 8
+    assert {pose for _family, _side, pose in cells} == {"center"}
+
+    for family, side, pose in cells:
+        row = build_v1011_preview_manifest_row(family, side, pose)
+        base = build_v1010_manifest_row(family, side, pose)
+
+        assert row["environment_version"] == V1011_PREVIEW_ENVIRONMENT_VERSION
+        # The published manifests record the V10.10 sampler; keep them resolvable.
+        assert row["sampler_class"] == "PactPlaceCorridorV1010FourObjectSampler"
+        assert row["pact_v106_scene_sha256"] == V1011_PREVIEW_SCENE["sha256"]
+        assert row["pact_v106_scene_sha256"] != base["pact_v106_scene_sha256"]
+        # Only the scene and markers move; the bench itself is the V10.10 bench.
+        assert row["pact_clutter_layout"] == base["pact_clutter_layout"]
+        assert row["pact_v1011_preview_kept_bottle"] == V1011_PREVIEW_KEEP_BOTTLE
+
+    kitchen = [str(item["uid"]) for item in V1011_PREVIEW_STANDING_KITCHEN]
+    assert len(kitchen) == 10
+    assert kitchen == build_v1011_preview_manifest_row(*cells[0])[
+        "pact_v1011_preview_standing_kitchen_uids"
+    ]
+
+    sampler = PactPlaceCorridorV1011PreviewOneBottleSampler
+    for hook in ("_ensure_manifest_row", "_auto_manifest_row_for_house"):
+        assert hook in sampler.__dict__, f"{hook} must be overridden, not inherited"
+    for house in range(len(cells)):
+        auto = sampler._auto_manifest_row_for_house(house)
+        assert auto["environment_version"] == V1011_PREVIEW_ENVIRONMENT_VERSION
+
+
 def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
     monkeypatch.setenv("MLSPACES_ASSETS_DIR", str(Path.home() / ".cache" / "molmo-spaces"))
     from molmo_spaces.data_generation.config import pact_place_datagen_configs
@@ -316,39 +367,57 @@ def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
         FrankaSkinPactPlaceV1010FourObjectConfig,
         FrankaSkinPactPlaceV1011CMixedClutterConfig,
         FrankaSkinPactPlaceV1011DRandomizedClutterConfig,
+        FrankaSkinPactPlaceV1011PreviewOneBottleConfig,
     )
 
+    # Recorded cameras are the non-proximity ones. Every lineage records the
+    # wrist; only the V10.11 preview also records the table camera, because its
+    # published episodes carry exo_camera_1 streams.
+    wrist_only = ("wrist_camera",)
+    with_table = ("wrist_camera", "exo_camera_1")
     cases = (
-        (FrankaSkinPactPlaceV5Config, 2, 900, "PactPlaceV5Sampler"),
+        (FrankaSkinPactPlaceV5Config, 2, 900, "PactPlaceV5Sampler", wrist_only),
         (
             FrankaSkinPactPlaceV95RealClutterConfig,
             8,
             900,
             "PactPlaceCorridorV93Sampler",
+            wrist_only,
         ),
         (
             FrankaSkinPactPlaceV107SpacedBenchConfig,
             24,
             1050,
             "PactPlaceCorridorV107SpacedBenchSampler",
+            wrist_only,
         ),
         (
             FrankaSkinPactPlaceV1010FourObjectConfig,
             24,
             1050,
             "PactPlaceCorridorV1010FourObjectSampler",
+            wrist_only,
+        ),
+        (
+            FrankaSkinPactPlaceV1011PreviewOneBottleConfig,
+            8,
+            1050,
+            "PactPlaceCorridorV1011PreviewOneBottleSampler",
+            with_table,
         ),
         (
             FrankaSkinPactPlaceV1011CMixedClutterConfig,
             24,
             1050,
             "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
+            wrist_only,
         ),
         (
             FrankaSkinPactPlaceV1011DRandomizedClutterConfig,
             24,
             1050,
             "PactPlaceCorridorV1011DRandomizedLayoutSampler",
+            wrist_only,
         ),
     )
     # The public surface is exactly these lineages, so an environment added
@@ -356,14 +425,19 @@ def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
     assert set(pact_place_datagen_configs.__all__) == {
         case[0].__name__ for case in cases
     }
-    for config_class, n_scenes, horizon, sampler_name in cases:
+    for config_class, n_scenes, horizon, sampler_name, recorded in cases:
         config = config_class()
         assert config.task_horizon == horizon
         assert len(config.task_sampler_config.scene_xml_paths) == n_scenes
         assert config.task_sampler_config.task_sampler_class.__name__ == sampler_name
         assert config.robot_config.action_noise_config.enabled is False
-        assert len(config.camera_config.cameras) == 41
-        assert sum(camera.is_proximity_sensor for camera in config.camera_config.cameras) == 40
+        cameras = config.camera_config.cameras
+        assert sum(camera.is_proximity_sensor for camera in cameras) == 40
+        assert (
+            tuple(camera.name for camera in cameras if not camera.is_proximity_sensor)
+            == recorded
+        )
+        assert len(cameras) == 40 + len(recorded)
 
 
 def test_public_task_module_does_not_export_failed_variants() -> None:
@@ -379,6 +453,7 @@ def test_public_task_module_does_not_export_failed_variants() -> None:
         "PactPlaceCorridorV1010FourObjectSampler",
         "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
         "PactPlaceCorridorV1011DRandomizedLayoutSampler",
+        "PactPlaceCorridorV1011PreviewOneBottleSampler",
         "PactPlaceV5Sampler",
         "PactPlaceV95RealClutterSampler",
     }
