@@ -930,7 +930,135 @@ def build_v107_spaced_manifest_row(
     }
 
 
+V12_ENVIRONMENT_VERSION = "pact_place_corridor_v10_11_preview_onebottle"
+V12_HOUSEHOLD_LAYOUT = "one_inbound_bottle_toward_robot"
+V12_SCENE = {
+    "filename": "pact_place_corridor_v10_11_center_preview.xml",
+    "sha256": "cb6be07e346bba2ea504858664d213c694c51c5889134a6253e7c2c7871e91ec",
+}
+
+# V12 keeps one inbound bottle and parks the rest of the V10.10 household, then
+# stands ten kitchen objects on the bench. The bench population is resolved
+# against live geometry at sample time, so only the inputs are frozen here.
+V12_PARK_HOUSEHOLD = ("Candle_1", "Candle_2", "Soap_Bottle_30")
+V12_KEEP_BOTTLE = "Soap_Bottle_11"
+V12_TOWARD_ROBOT_DX_M = -0.15
+V12_BOTTLE_MIN_X_M = 0.5
+
+# Upright about x, so meshes authored lying down stand on the bench.
+V12_STAND_QUAT = (2 ** (-0.5), 2 ** (-0.5), 0.0, 0.0)
+V12_BENCH_Z = 0.72
+V12_SAFE_X = (0.55, 1.24)
+V12_SAFE_Y = (-0.42, 0.36)
+V12_CLEAR_PAD_M = 0.02
+V12_PICKUP_PAD_M = 0.05
+# Keep-out box for the arm's motion lane between the two vessels.
+V12_LANE_KEEP_LO = (0.48, -0.18, 0.68)
+V12_LANE_KEEP_HI = (0.98, 0.18, 1.16)
+# Tried before the fallback grid, so the bench fills its open pockets first.
+V12_EMPTY_SPACE_XY = (
+    (1.08, -0.28),
+    (1.08, 0.2),
+    (0.88, -0.3),
+    (0.88, 0.24),
+    (0.98, -0.3),
+    (0.98, 0.22),
+    (1.16, -0.2),
+    (1.16, 0.16),
+    (0.84, -0.22),
+    (0.84, 0.18),
+)
+# ``behind_grasp`` pins an object just beyond the grasp target; ``xy`` pins an
+# exact slot. Anything else takes the first candidate that fits.
+V12_STANDING_KITCHEN: tuple[dict[str, Any], ...] = (
+    {"uid": "Bottle_1", "xy": (0.8, -0.28)},
+    {"uid": "Soap_Bottle_1", "behind_grasp": True},
+    {"uid": "Wine_Bottle_1"},
+    {"uid": "Paper_Towel_1"},
+    {"uid": "Tissue_Box_1"},
+    {"uid": "Soap_Bottle_3"},
+    {"uid": "Salt_Shaker_2"},
+    {"uid": "Pepper_Shaker_2"},
+    {"uid": "Salt_Shaker_1"},
+    {"uid": "Pepper_Shaker_1"},
+)
+V12_TRAY_WELL_MARGIN_M = 0.02
+V12_HOVER_ABOVE_PLACE_M = 0.18
+
+
+def v12_cells() -> list[tuple[str, str, str]]:
+    """The eight published V12 cells: every family and side at the centre pose."""
+    ordered = [
+        (family, side, "center")
+        for family in V95_LAYOUT_FAMILY_IDS
+        for side in INTRUSION_SIDES
+    ]
+    preferred = ("F0_target_side_stagger", "left", "center")
+    if preferred in ordered:
+        ordered.remove(preferred)
+        ordered.insert(0, preferred)
+    return ordered
+
+
+def v12_cell(index: int) -> tuple[str, str, str]:
+    cells = v12_cells()
+    return cells[int(index) % len(cells)]
+
+
+def build_v12_manifest_row(
+    family_id: str, intrusion_side: str, pose_id: str = "center"
+) -> dict[str, Any]:
+    """V12 is the V10.10 row over the preview scene, marked as the preview env.
+
+    The bench objects V12 adds are mocap bodies placed against live geometry at
+    sample time, so they are not part of the row.
+    """
+    if pose_id != "center":
+        raise ValueError(f"V12 is published at the centre pose only, got {pose_id!r}")
+    row = build_v1010_manifest_row(family_id, intrusion_side, pose_id)
+    row.update(
+        {
+            "environment_version": V12_ENVIRONMENT_VERSION,
+            # The published manifests record the V10.10 sampler, because V12 was
+            # collected by overlaying it rather than by subclassing it. Keep the
+            # recorded value so those manifests still resolve.
+            "sampler_class": "PactPlaceCorridorV1010FourObjectSampler",
+            "household_layout": V12_HOUSEHOLD_LAYOUT,
+            "pact_v106_scene_sha256": V12_SCENE["sha256"],
+            "pact_v12_scene_filename": V12_SCENE["filename"],
+            "pact_v12_parked_household": list(V12_PARK_HOUSEHOLD),
+            "pact_v12_kept_bottle": V12_KEEP_BOTTLE,
+            "pact_v12_standing_kitchen_uids": [
+                str(item["uid"]) for item in V12_STANDING_KITCHEN
+            ],
+        }
+    )
+    return row
+
+
 __all__ = [
+    "V12_BENCH_Z",
+    "V12_BOTTLE_MIN_X_M",
+    "V12_CLEAR_PAD_M",
+    "V12_EMPTY_SPACE_XY",
+    "V12_ENVIRONMENT_VERSION",
+    "V12_HOUSEHOLD_LAYOUT",
+    "V12_HOVER_ABOVE_PLACE_M",
+    "V12_KEEP_BOTTLE",
+    "V12_LANE_KEEP_HI",
+    "V12_LANE_KEEP_LO",
+    "V12_PARK_HOUSEHOLD",
+    "V12_PICKUP_PAD_M",
+    "V12_SAFE_X",
+    "V12_SAFE_Y",
+    "V12_SCENE",
+    "V12_STANDING_KITCHEN",
+    "V12_STAND_QUAT",
+    "V12_TOWARD_ROBOT_DX_M",
+    "V12_TRAY_WELL_MARGIN_M",
+    "build_v12_manifest_row",
+    "v12_cell",
+    "v12_cells",
     "INTRUSION_SIDES",
     "POSE_IDS",
     "V95_LAYOUT_FAMILIES",
