@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -357,6 +358,47 @@ def test_v1011_preview_is_the_v1010_row_over_the_preview_scene() -> None:
     for house in range(len(cells)):
         auto = sampler._auto_manifest_row_for_house(house)
         assert auto["environment_version"] == V1011_PREVIEW_ENVIRONMENT_VERSION
+
+
+def test_v1011_preview_dresses_the_bench_only_after_the_expert_plans(monkeypatch) -> None:
+    """The standing kitchen must be installed by the expert, not by the sampler.
+
+    Ten extra bodies change what the planner treats as reachable, so the
+    published collection planned on a clear bench and dressed it afterwards. If
+    this lineage falls back to the shared corridor expert, or the sampler starts
+    placing at sample time, the bench is still correct but the trajectories are
+    not the ones that were released.
+    """
+    monkeypatch.setenv("MLSPACES_ASSETS_DIR", str(Path.home() / ".cache" / "molmo-spaces"))
+    from molmo_spaces.data_generation.config.pact_place_datagen_configs import (
+        FrankaSkinPactPlaceV1010FourObjectConfig,
+        FrankaSkinPactPlaceV1011PreviewOneBottleConfig,
+    )
+    from molmo_spaces.tasks import pact_place
+
+    preview = FrankaSkinPactPlaceV1011PreviewOneBottleConfig()
+    shared = FrankaSkinPactPlaceV1010FourObjectConfig()
+    policy_cls = preview.policy_config.policy_cls
+    assert policy_cls is pact_place.PactPlaceCorridorV1011PreviewPolicy
+    assert policy_cls is not shared.policy_config.policy_cls
+    assert issubclass(policy_cls, pact_place.PactPlaceCorridorPolicy)
+
+    # Placement happens on reset; the sampler only publishes the body list.
+    assert "reset" in policy_cls.__dict__
+    sampler_source = inspect.getsource(
+        pact_place.PactPlaceCorridorV1011PreviewOneBottleSampler
+    )
+    assert "_v1011_preview_install_preview_layout" not in sampler_source
+
+    # The overlay behaviours must stay attached to something.
+    reset_source = inspect.getsource(policy_cls)
+    for helper in (
+        "_v1011_preview_install_preview_layout",
+        "_v1011_preview_extras_overlap_motion_lane",
+        "_v1011_preview_keep_glass_inside_blue_tray",
+        "_v1011_preview_install_preview_contact_classes",
+    ):
+        assert helper in reset_source, f"{helper} is no longer wired to the expert"
 
 
 def test_published_hub_tags_resolve_to_their_environments(monkeypatch) -> None:

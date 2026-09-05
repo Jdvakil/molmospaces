@@ -82,6 +82,7 @@ from molmo_spaces.tasks.enclosure_reach import (
     ObstacleAwarePickPlannerPolicy,
 )
 from molmo_spaces.tasks.pick_and_place_task import PickAndPlaceTask
+from molmo_spaces.tasks.task_sampler_errors import HouseInvalidForTask
 from molmo_spaces.utils.linalg_utils import transform_to_twist, twist_to_transform
 from molmo_spaces.utils.mj_model_and_data_utils import body_aabb
 from molmo_spaces.utils.object_metadata import ObjectMeta
@@ -2182,6 +2183,12 @@ def _v1011_preview_keep_glass_inside_blue_tray(policy) -> None:
     policy._compute_trajectory = _compute_trajectory  # type: ignore[method-assign]
 
 
+#: Where the sampler hands the attached standing-kitchen bodies to the expert.
+V1011_PREVIEW_EXTRA_BODIES_KEY = "pact_v1011_preview_extra_bodies"
+#: Where the expert reports back the subset that actually fit on the bench.
+V1011_PREVIEW_PLACED_BODIES_KEY = "pact_v1011_preview_placed_bodies"
+
+
 class PactPlaceCorridorV1011PreviewOneBottleSampler(PactPlaceCorridorV1010FourObjectSampler):
     """V10.11 preview bench: the V10.10 four-object row plus ten standing extras.
 
@@ -2223,17 +2230,14 @@ class PactPlaceCorridorV1011PreviewOneBottleSampler(PactPlaceCorridorV1010FourOb
 
     def _sample_task(self, env: CPUMujocoEnv):
         task = super()._sample_task(env)
-        extra_bodies = getattr(self, "_v1011_preview_extra_bodies", None)
-        if task is None or not extra_bodies:
+        if task is None:
             return task
-        # The household is edited only once the task exists, which is the order
-        # the published collection used. Parking a bottle two metres away during
-        # _apply_theta would instead trip the inherited settle drift check.
-        _v1011_preview_install_preview_layout(
-            env.current_model,
-            env.current_data,
-            extra_bodies,
-            getattr(task, "scene_params", None),
+        # The bench is dressed by the expert after it has planned, not here.
+        # Publish the attached bodies so the policy can find them; see
+        # PactPlaceCorridorV1011PreviewPolicy.reset for why the order matters.
+        task.scene_params = dict(getattr(task, "scene_params", {}) or {})
+        task.scene_params[V1011_PREVIEW_EXTRA_BODIES_KEY] = list(
+            getattr(self, "_v1011_preview_attached_bodies", []) or []
         )
         return task
 
@@ -3779,6 +3783,73 @@ class PactPlaceCorridorPolicyConfig(PickAndPlacePlannerPolicyConfig):
     def model_post_init(self, __context) -> None:
         super().model_post_init(__context)
         self.policy_cls = PactPlaceCorridorPolicy
+
+
+class PactPlaceCorridorV1011PreviewPolicy(PactPlaceCorridorPolicy):
+    """Place-corridor expert that plans on a clear bench, then dresses it.
+
+    Three things about the V10.11 preview live in the expert rather than in the
+    sampler, because that is where the published collection put them.
+
+    The standing kitchen is installed *after* the trajectory is planned. Ten
+    extra bodies on the bench change what the planner considers reachable, so
+    planning against the dressed bench does not reproduce the released
+    episodes. Placement is therefore deferred to the end of ``reset``.
+
+    The glass is then placed by hovering over the tray and dropping vertically
+    into an inset footprint, rather than approaching on a slant, so a tall
+    neighbour cannot be clipped on the way in.
+
+    Finally, an episode is rejected outright if any extra ends up in the arm's
+    motion lane, with the deliberate exception of the objects parked behind the
+    grasp target, which are meant to sit there.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        _v1011_preview_install_preview_contact_classes()
+        _v1011_preview_keep_glass_inside_blue_tray(self)
+
+    def reset(self, reset_retries: bool = True):
+        result = super().reset(reset_retries)
+        scene_params = getattr(self.task, "scene_params", None) or {}
+        # Always start from the full attached set. Installing narrows the list to
+        # what fit, so reusing the narrowed list on a later reset would strand
+        # objects that a fresh layout could have placed.
+        extra_bodies = list(scene_params.get(V1011_PREVIEW_EXTRA_BODIES_KEY, []))
+        if not extra_bodies:
+            return result
+
+        model = self.task.env.current_model
+        data = self.task.env.current_data
+        placed = _v1011_preview_install_preview_layout(
+            model, data, extra_bodies, scene_params
+        )
+        scene_params[V1011_PREVIEW_PLACED_BODIES_KEY] = list(placed)
+
+        behind_grasp = tuple(
+            str(item["uid"])
+            for item in V1011_PREVIEW_STANDING_KITCHEN
+            if item.get("behind_grasp")
+        )
+        intruders = [
+            name
+            for name in _v1011_preview_extras_overlap_motion_lane(model, data, placed)
+            if not any(uid in name for uid in behind_grasp)
+        ]
+        if intruders:
+            raise HouseInvalidForTask(
+                "extras_in_motion_lane " + ",".join(intruders[:3])
+            )
+        return result
+
+
+class PactPlaceCorridorV1011PreviewPolicyConfig(PactPlaceCorridorPolicyConfig):
+    """Wire the V10.11 preview expert."""
+
+    def model_post_init(self, __context) -> None:
+        super().model_post_init(__context)
+        self.policy_cls = PactPlaceCorridorV1011PreviewPolicy
 
 
 class PactPlaceCorridorV1011MixedClutterSampler(_PactPlaceStaticPendantSampler):

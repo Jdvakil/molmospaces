@@ -107,6 +107,17 @@ being dropped, so a run that stands seven of the ten is expected rather than a
 failure. `Soap_Bottle_1` is pinned just behind the grasp target so the arm always
 has something to sense on approach.
 
+It is also the one lineage with its own expert. The bench is dressed by
+`PactPlaceCorridorV1011PreviewPolicy` at the end of `reset`, after the
+trajectory has been planned, because ten extra bodies change what the planner
+treats as reachable and the released episodes were planned against a clear
+bench. The same expert insets the place footprint into the tray and drops the
+glass vertically from a hover instead of approaching on a slant, so a tall
+neighbour cannot be clipped on the way in, and it rejects an episode outright if
+any extra lands in the arm's motion lane, excepting the ones deliberately parked
+behind the grasp target. Rejected episodes are retried, which is the same
+behaviour the published collection relied on.
+
 This lineage also differs in what it records. It is the only one that keeps the
 table camera (`exo_camera_1`) alongside the wrist, because the published
 episodes carry those streams. On the hub it appears as `data/v12`; that tag is a

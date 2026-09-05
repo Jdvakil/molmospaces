@@ -27,6 +27,7 @@ from molmo_spaces.tasks.pact_place import (
     PactPlaceCorridorV1010FourObjectSampler,
     PactPlaceCorridorV1011C33PctTallerPrimitiveSampler,
     PactPlaceCorridorV1011PreviewOneBottleSampler,
+    PactPlaceCorridorV1011PreviewPolicyConfig,
     PactPlaceCorridorV1011DRandomizedLayoutSampler,
     PactPlaceV5Sampler,
     PactPlaceV95RealClutterSampler,
@@ -150,6 +151,9 @@ class FrankaSkinPactPlaceV1011PreviewOneBottleConfig(_PactPlaceBaseConfig):
 
     task_horizon: int | None = 1050
     camera_config: FrankaSkinHybridCameraSystem = FrankaSkinHybridCameraSystem()
+    # The standing kitchen is installed by the expert after it plans, so this
+    # lineage needs its own policy rather than the shared corridor expert.
+    policy_config: BasePolicyConfig = PactPlaceCorridorV1011PreviewPolicyConfig()
     task_sampler_config: PickTaskSamplerConfig = _sampler_config(
         PactPlaceCorridorV1011PreviewOneBottleSampler,
         [str(_CUSTOM_SCENES / V1011_PREVIEW_SCENE["filename"])] * len(v1011_preview_cells()),
