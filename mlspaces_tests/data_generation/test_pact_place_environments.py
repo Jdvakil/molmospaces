@@ -434,11 +434,17 @@ def test_published_hub_tags_resolve_to_their_environments(monkeypatch) -> None:
         assert environment_version_for_hub_tag(f"data/{tag}") == environment_version
 
     # The v12 alias resolves, and to the preview rather than to a neighbour.
-    aliased = config_registry.get_config_class("FrankaSkinPactPlaceV12Config")
-    assert aliased is FrankaSkinPactPlaceV1011PreviewOneBottleConfig
-    marker = aliased().task_sampler_config.task_sampler_class.PACT_PLACE_ENVIRONMENT_VERSION
-    assert marker == HUB_DATASET_TAGS["v12"]
-    assert marker not in (V1010_ENVIRONMENT_VERSION, V1011C_ENVIRONMENT_VERSION)
+    # Both the class-style name and the bare hub tag must work: an agent
+    # holding only `data/v12` will look up `v12`.
+    for alias in ("FrankaSkinPactPlaceV12Config", "v12"):
+        aliased = config_registry.get_config_class(alias)
+        assert aliased is FrankaSkinPactPlaceV1011PreviewOneBottleConfig
+        marker = aliased().task_sampler_config.task_sampler_class.PACT_PLACE_ENVIRONMENT_VERSION
+        assert marker == HUB_DATASET_TAGS["v12"]
+        assert marker not in (V1010_ENVIRONMENT_VERSION, V1011C_ENVIRONMENT_VERSION)
+
+    # Only v12 needs a registry alias. The other hub tags already match
+    # their config names closely enough that they do not get a second entry.
 
     with pytest.raises(KeyError):
         environment_version_for_hub_tag("v99")

@@ -141,6 +141,7 @@ class FrankaSkinPactPlaceV107SpacedBenchConfig(_PactPlaceBaseConfig):
 # nothing and the nearest hits are V10.10 and V10.11c/d, which are different
 # benches. See HUB_DATASET_TAGS for the full tag mapping.
 @register_config("FrankaSkinPactPlaceV12Config")
+@register_config("v12")
 class FrankaSkinPactPlaceV1011PreviewOneBottleConfig(_PactPlaceBaseConfig):
     """V10.11 preview: one inbound bottle, ten kitchen objects standing behind it.
 
