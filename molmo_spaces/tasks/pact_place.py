@@ -28,12 +28,15 @@ from molmo_spaces.configs.policy_configs import (
     PickPlannerPolicyConfig,
 )
 from molmo_spaces.data_generation.pact_place.contracts import (
+    V107_SPACED_ENVIRONMENT_VERSION,
     V1010_ENVIRONMENT_VERSION,
     build_v95_manifest_row,
+    build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
     build_v1011c_manifest_row,
     build_v1011d_manifest_row,
     v95_cell,
+    v107_spaced_cell,
     v1010_cell,
     v1011_cell,
 )
@@ -1522,6 +1525,41 @@ class PactPlaceCorridorV1010FourObjectSampler(_PactPlaceStaticPendantSampler):
                 f"V10.10 expected {self.ACTIVE_CLUTTER_COUNT} active clutter bodies, "
                 f"got {len(active)}: {active}"
             )
+
+
+class PactPlaceCorridorV107SpacedBenchSampler(_PactPlaceStaticPendantSampler):
+    """V10.7 spaced bench: the V10.6 pendant over a fully populated bench.
+
+    The pendant, panel, target and vessel jitter are inherited unchanged. Only
+    the bench population differs: all eight palette slots are live, the glass
+    moves back into the otherwise empty mid-bench, and one bottle stays forward
+    as the route blocker. Every decor object is naturally tall and standing, so
+    the link-5/link-6 skin has something to sense across the whole table.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = V107_SPACED_ENVIRONMENT_VERSION
+
+    @staticmethod
+    def _auto_manifest_row_for_house(house_index: int) -> dict[str, Any]:
+        family, side, pose = v107_spaced_cell(house_index)
+        return build_v107_spaced_manifest_row(family, side, pose)
+
+    def _ensure_manifest_row(self) -> dict[str, Any]:
+        if self._pact_manifest_row_is_explicit:
+            return self._pact_manifest_row or {}
+        try:
+            house_index = int(self.current_house_index)
+        except (AttributeError, TypeError, ValueError):
+            house_index = 0
+        if self._pact_manifest_row is None or self._pact_auto_house_index != house_index:
+            self._pact_manifest_row = self._auto_manifest_row_for_house(house_index)
+            self._pact_auto_house_index = house_index
+        return self._pact_manifest_row
+
+
+# The published manifests for data/v107_spaced record the sampler under its
+# pre-rename name. Keep it resolvable so those rows stay reproducible.
+PactPlaceCorridorV106Sampler = _PactPlaceStaticPendantSampler
 
 
 class PactPlaceTCPMoveSequence(TCPMoveSequence):

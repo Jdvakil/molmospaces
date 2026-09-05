@@ -20,6 +20,7 @@ from molmo_spaces.molmo_spaces_constants import ASSETS_DIR
 from molmo_spaces.tasks.pact_place import (
     PactPlaceCorridorPolicyConfig,
     PactPlaceCorridorTask,
+    PactPlaceCorridorV107SpacedBenchSampler,
     PactPlaceCorridorV1010FourObjectSampler,
     PactPlaceCorridorV1011C33PctTallerPrimitiveSampler,
     PactPlaceCorridorV1011DRandomizedLayoutSampler,
@@ -113,6 +114,22 @@ def _v1010_scene_paths() -> list[str]:
     return paths
 
 
+@register_config("FrankaSkinPactPlaceV107SpacedBenchConfig")
+class FrankaSkinPactPlaceV107SpacedBenchConfig(_PactPlaceBaseConfig):
+    """V10.7 spaced bench: eight live tall objects under the V10.6 pendant."""
+
+    task_horizon: int | None = 1050
+    task_sampler_config: PickTaskSamplerConfig = _sampler_config(
+        PactPlaceCorridorV107SpacedBenchSampler,
+        _v1010_scene_paths(),
+    )
+    output_dir: Path = ASSETS_DIR / "datagen" / "pact_place_v107_spaced_bench"
+
+    @property
+    def tag(self) -> str:
+        return "franka_skin_pact_place_v107_spaced_bench"
+
+
 @register_config("FrankaSkinPactPlaceV1010FourObjectConfig")
 class FrankaSkinPactPlaceV1010FourObjectConfig(_PactPlaceBaseConfig):
     """V10.10: V9.5 chicane, four live objects and one static pendant."""
@@ -164,6 +181,7 @@ class FrankaSkinPactPlaceV1011DRandomizedClutterConfig(_PactPlaceBaseConfig):
 __all__ = [
     "FrankaSkinPactPlaceV5Config",
     "FrankaSkinPactPlaceV95RealClutterConfig",
+    "FrankaSkinPactPlaceV107SpacedBenchConfig",
     "FrankaSkinPactPlaceV1010FourObjectConfig",
     "FrankaSkinPactPlaceV1011CMixedClutterConfig",
     "FrankaSkinPactPlaceV1011DRandomizedClutterConfig",

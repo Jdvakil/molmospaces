@@ -680,6 +680,256 @@ def build_v1011d_manifest_row(
     )
 
 
+V107_SPACED_ENVIRONMENT_VERSION = "pact_place_corridor_v10_7_spaced_bench"
+V107_SPACED_LAYOUT_CONTRACT_VERSION = "pact_place_v107_spaced_bench_v4"
+# Decor keeps a wide gap from anything; the two vessels keep V9's 10 mm.
+V107_SPACED_MIN_DECOR_GAP_M = 0.040
+V107_SPACED_MIN_VESSEL_GAP_M = 0.010
+V107_SPACED_MIN_DECOR_HEIGHT_M = 0.11
+V107_SPACED_DECOR_SLOTS = ("02", "03", "04", "05", "07", "08")
+# Naturally tall accepted UIDs; nothing here is stretched. The two soap-bottle
+# meshes are labelled vase/pot because the vessels already consume both
+# ``soapbottle`` entries under the V9 per-category cap of two.
+V107_SPACED_TALL_DECOR: tuple[tuple[str, str, str], ...] = (
+    ("02", "Soap_Bottle_3", "vase"),
+    ("03", "Soap_Bottle_1", "pot"),
+    ("04", "e3227ecd37d44cd6be1331941d9cfa2f", "spray can"),
+    ("05", "663b5edc92a543668c1b602981e724a4", "can"),
+    ("07", "5d13903e21044558bfb2bb7b72e76b4d", "can"),
+    ("08", "Candle_4", "candle"),
+)
+# The glass sits in the empty mid-bench; one bottle stays forward as the route
+# blocker. Y stagger follows the panel so the open lane stays on the panel side.
+V107_SPACED_VESSEL_XY_M: dict[str, dict[str, tuple[float, float]]] = {
+    "left": {"inbound": (1.02, -0.08), "outbound": (0.68, 0.02)},
+    "right": {"inbound": (1.02, 0.08), "outbound": (0.68, -0.02)},
+}
+# Side rails around the glass and blocker so the bench is used, not empty.
+V107_SPACED_DECOR_XY_M: dict[str, tuple[float, float]] = {
+    "02": (0.72, 0.34),
+    "03": (0.72, -0.34),
+    "04": (0.95, 0.36),
+    "05": (0.95, -0.36),
+    "07": (1.22, 0.28),
+    "08": (1.22, -0.28),
+}
+
+
+def _v107_spaced_slot(
+    *, slot: str, role: str, uid: str, category: str, record: dict[str, Any]
+) -> dict[str, Any]:
+    dimensions = [float(value) for value in record["collision_dimensions_m"]]
+    return {
+        "slot": slot,
+        "slot_class": "prop",
+        "role": role,
+        "uid": uid,
+        "category": category,
+        "dimensions_m": dimensions,
+        "annotation_dimensions_m": [float(value) for value in record["dimensions_m"]],
+        "half_m": [value / 2.0 for value in dimensions],
+        "max_dimension_m": max(dimensions),
+        "support": "shelf_standing",
+        "quat_wxyz": [2**-0.5, 2**-0.5, 0.0, 0.0],
+        "body_prefix": f"pact_clutter_{slot}/",
+    }
+
+
+def load_v107_spaced_palette() -> dict[str, Any]:
+    """Two V9.5 vessels plus six tall standing decor objects at natural size."""
+    base = load_v95_palette()
+    records = {
+        str(item.get("uid")): item
+        for item in (base.get("records") or [])
+        if item.get("accepted")
+    }
+    by_slot = {str(item["slot"]): dict(item) for item in base["palette"]}
+
+    inbound = dict(by_slot["06"])
+    inbound["role"] = "inbound_vessel"
+    outbound = dict(by_slot["01"])
+    outbound["role"] = "outbound_vessel"
+
+    decor: list[dict[str, Any]] = []
+    for slot, uid, category in V107_SPACED_TALL_DECOR:
+        record = records.get(uid)
+        if record is None:
+            raise ValueError(f"spaced palette missing accepted UID {uid}")
+        height = float(record["collision_dimensions_m"][2])
+        if height < V107_SPACED_MIN_DECOR_HEIGHT_M:
+            raise ValueError(f"decor {uid} is not standing-tall enough (h={height:.3f})")
+        decor.append(
+            _v107_spaced_slot(
+                slot=slot, role="decor", uid=uid, category=category, record=record
+            )
+        )
+
+    palette = sorted([inbound, outbound, *decor], key=lambda item: str(item["slot"]))
+    if len(palette) != 8:
+        raise ValueError(f"expected 8 palette entries, got {len(palette)}")
+    return {
+        "palette": palette,
+        "derived_for_environment_version": V107_SPACED_ENVIRONMENT_VERSION,
+        "layout_contract_version": V107_SPACED_LAYOUT_CONTRACT_VERSION,
+        "selection_policy": {
+            "stretch_meshes": False,
+            "tall_standing_only": True,
+            "active_decor_slots": list(V107_SPACED_DECOR_SLOTS),
+            "parked_decor_slots": [],
+            "min_decor_gap_m": V107_SPACED_MIN_DECOR_GAP_M,
+            "min_vessel_gap_m": V107_SPACED_MIN_VESSEL_GAP_M,
+        },
+    }
+
+
+def _v107_spaced_object(item: dict[str, Any], xy: tuple[float, float]) -> dict[str, Any]:
+    dimensions = [float(value) for value in item["dimensions_m"]]
+    half = [value / 2.0 for value in dimensions]
+    x, y = xy
+    return {
+        "palette_slot": str(item["slot"]),
+        "uid": str(item["uid"]),
+        "role": str(item["role"]),
+        "category": str(item["category"]),
+        "support": "bench_standing",
+        "center_m": [float(x), float(y), float(SHELF_TOP_Z + half[2])],
+        "half_m": half,
+        "quat_wxyz": [float(value) for value in item["quat_wxyz"]],
+        "size_class": (
+            "small"
+            if max(dimensions) <= 0.10
+            else "medium"
+            if max(dimensions) <= 0.18
+            else "large"
+        ),
+    }
+
+
+def validate_v107_spaced_layout(layout: dict[str, Any]) -> None:
+    """All eight objects stay on the bench and keep their role-dependent gap."""
+    objects = list(layout.get("objects") or [])
+    if len(objects) != 8:
+        raise ValueError(f"spaced layout expects 8 active objects, got {len(objects)}")
+    for item in objects:
+        center = tuple(map(float, item["center_m"]))
+        half = tuple(map(float, item["half_m"]))
+        for axis in range(3):
+            if center[axis] - half[axis] < WORKSPACE_LOW_XYZ[axis] - 1e-6:
+                raise ValueError(f"slot {item['palette_slot']} escapes low workspace")
+            if center[axis] + half[axis] > WORKSPACE_HIGH_XYZ[axis] + 1e-6:
+                raise ValueError(f"slot {item['palette_slot']} escapes high workspace")
+    vessel_roles = {"inbound_vessel", "outbound_vessel"}
+    for index, left in enumerate(objects):
+        lc = tuple(map(float, left["center_m"]))
+        lh = tuple(map(float, left["half_m"]))
+        for right in objects[index + 1 :]:
+            rc = tuple(map(float, right["center_m"]))
+            rh = tuple(map(float, right["half_m"]))
+            both_vessels = left["role"] in vessel_roles and right["role"] in vessel_roles
+            gap = V107_SPACED_MIN_VESSEL_GAP_M if both_vessels else V107_SPACED_MIN_DECOR_GAP_M
+            if not any(abs(lc[k] - rc[k]) >= lh[k] + rh[k] + gap for k in (0, 1)):
+                raise ValueError(
+                    f"spaced overlap: {left['palette_slot']} vs {right['palette_slot']}"
+                )
+
+
+def build_v107_spaced_layout(
+    palette_document: dict[str, Any], *, family_id: str, intrusion_side: str
+) -> dict[str, Any]:
+    if family_id not in LAYOUT_FAMILIES:
+        raise ValueError(f"unknown family {family_id}")
+    if intrusion_side not in INTRUSION_SIDES:
+        raise ValueError(f"bad intrusion_side {intrusion_side}")
+    # The family id still drives row metadata and vessel jitter, but the vessel
+    # XY is spaced-bench: blocker forward, glass in the otherwise empty middle.
+    vessel_xy = V107_SPACED_VESSEL_XY_M[intrusion_side]
+    by_slot = {str(item["slot"]): item for item in palette_document["palette"]}
+    objects = [
+        _v107_spaced_object(by_slot["06"], tuple(map(float, vessel_xy["inbound"]))),
+        _v107_spaced_object(by_slot["01"], tuple(map(float, vessel_xy["outbound"]))),
+    ]
+    for slot in V107_SPACED_DECOR_SLOTS:
+        objects.append(_v107_spaced_object(by_slot[slot], V107_SPACED_DECOR_XY_M[slot]))
+
+    layout = {
+        "layout_id": f"v107_spaced_{intrusion_side}_{family_id}",
+        "layout_family_id": family_id,
+        "layout_contract_version": V107_SPACED_LAYOUT_CONTRACT_VERSION,
+        "intrusion_side": intrusion_side,
+        "objects": objects,
+        "inbound_vessel_slot": "06",
+        "outbound_vessel_slot": "01",
+        "route_blocker_slot": "01",
+        "route_blocker_center_xy_m": list(map(float, vessel_xy["outbound"])),
+        "inbound_vessel_center_xy_m": list(map(float, vessel_xy["inbound"])),
+        "expected_bow_direction": "-y" if intrusion_side == "left" else "+y",
+        "shelf_top_z_m": SHELF_TOP_Z,
+        "support": "bench_standing",
+        "workspace_bounds_m": [list(WORKSPACE_LOW_XYZ), list(WORKSPACE_HIGH_XYZ)],
+        "legacy_panel_active": True,
+        "spaced_bench": True,
+        "n_active_objects": len(objects),
+        "n_parked_decor": 0,
+    }
+    validate_v107_spaced_layout(layout)
+    return layout
+
+
+def v107_spaced_cell(index: int) -> tuple[str, str, str]:
+    return v1010_cell(index)
+
+
+def build_v107_spaced_manifest_row(
+    family_id: str, intrusion_side: str, pose_id: str
+) -> dict[str, Any]:
+    """Row for the published ``data/v107_spaced`` bench.
+
+    The pendant assembly and scene hashes are inherited from V10.10 unchanged;
+    only the bench population differs.
+    """
+    if family_id not in V95_LAYOUT_FAMILY_IDS:
+        raise ValueError(f"unknown V9.5 family {family_id!r}")
+    if intrusion_side not in INTRUSION_SIDES:
+        raise ValueError(f"unknown intrusion side {intrusion_side!r}")
+    if pose_id not in POSE_IDS:
+        raise ValueError(f"unknown pendant pose {pose_id!r}")
+    palette = load_v107_spaced_palette()
+    layout = build_v107_spaced_layout(
+        palette, family_id=family_id, intrusion_side=intrusion_side
+    )
+    jitter = V95_VESSEL_JITTER[V95_LAYOUT_FAMILY_IDS.index(family_id)]
+    scene = V1010_SCENE_BY_POSE[pose_id]
+    return {
+        "family": family_id,
+        "family_id": family_id,
+        "layout_family_id": family_id,
+        "layout_id": layout["layout_id"],
+        "family_attempt": 0,
+        "scene_template_house_index": 1,
+        "max_sampling_retries": 12,
+        "intrusion_side": intrusion_side,
+        "pose_id": pose_id,
+        "pose_offset_m": POSE_OFFSETS_M[pose_id],
+        "clutter_x_jitter_m": dict(jitter[0]),
+        "clutter_y_jitter_m": dict(jitter[1]),
+        "panel_face_jitter_m": 0.0,
+        "panel_x_jitter_m": 0.0,
+        "target_x_jitter_m": 0.0,
+        "target_y_jitter_m": 0.0,
+        "environment_version": V107_SPACED_ENVIRONMENT_VERSION,
+        "layout_contract_version": V107_SPACED_LAYOUT_CONTRACT_VERSION,
+        "sampler_class": "PactPlaceCorridorV107SpacedBenchSampler",
+        "pact_v106_x_m": V1010_ASSEMBLY["x_m"],
+        "pact_v106_r_neg_m": V1010_ASSEMBLY["r_neg_m"],
+        "pact_v106_r_pos_m": V1010_ASSEMBLY["r_pos_m"],
+        "pact_v106_scene_sha256": scene["sha256"],
+        "pact_v107_scene_filename": scene["filename"],
+        "pact_v107_spaced_bench": True,
+        "pact_clutter_palette": copy.deepcopy(palette["palette"]),
+        "pact_clutter_layout": layout,
+    }
+
+
 __all__ = [
     "INTRUSION_SIDES",
     "POSE_IDS",
@@ -700,13 +950,21 @@ __all__ = [
     "V1011_NEAR_TARGET_SLOTS",
     "V1011_PRIMITIVES",
     "V1011_PRIMITIVE_SLOTS",
+    "V107_SPACED_DECOR_SLOTS",
+    "V107_SPACED_ENVIRONMENT_VERSION",
+    "V107_SPACED_LAYOUT_CONTRACT_VERSION",
+    "V107_SPACED_TALL_DECOR",
     "build_v95_layout",
     "build_v95_manifest_row",
+    "build_v107_spaced_layout",
+    "build_v107_spaced_manifest_row",
     "build_v1010_manifest_row",
     "build_v1011c_manifest_row",
     "build_v1011d_manifest_row",
+    "load_v107_spaced_palette",
     "load_v95_palette",
     "sha256_payload",
+    "v107_spaced_cell",
     "v95_cell",
     "v1010_cell",
     "v1011_cell",
