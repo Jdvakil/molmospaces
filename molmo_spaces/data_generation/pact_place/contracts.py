@@ -1040,7 +1040,29 @@ def build_v1011_preview_manifest_row(
     return row
 
 
+# Hub release tags are not derivable from the environment markers: the hub
+# numbers releases, this repo names benches. Anyone starting from a published
+# dataset only has the tag, so keep the mapping explicit rather than leaving it
+# to be guessed from adjacent version numbers, which name different benches.
+HUB_DATASET_TAGS: dict[str, str] = {
+    "v12": V1011_PREVIEW_ENVIRONMENT_VERSION,
+    "v107_spaced": V107_SPACED_ENVIRONMENT_VERSION,
+    "v1011d": V1011D_ENVIRONMENT_VERSION,
+}
+
+
+def environment_version_for_hub_tag(tag: str) -> str:
+    """Map a published hub dataset tag to the environment marker it was collected from."""
+    key = tag.strip().strip("/").removeprefix("data/")
+    if key not in HUB_DATASET_TAGS:
+        known = ", ".join(sorted(HUB_DATASET_TAGS))
+        raise KeyError(f"unknown hub dataset tag {tag!r}; known tags: {known}")
+    return HUB_DATASET_TAGS[key]
+
+
 __all__ = [
+    "HUB_DATASET_TAGS",
+    "environment_version_for_hub_tag",
     "V1011_PREVIEW_BENCH_Z",
     "V1011_PREVIEW_BOTTLE_MIN_X_M",
     "V1011_PREVIEW_CLEAR_PAD_M",

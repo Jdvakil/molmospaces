@@ -111,7 +111,13 @@ This lineage also differs in what it records. It is the only one that keeps the
 table camera (`exo_camera_1`) alongside the wrist, because the published
 episodes carry those streams. On the hub it appears as `data/v12`; that tag is a
 release label, and the environment's own marker is
-`pact_place_corridor_v10_11_preview_onebottle`. Its published manifests record
+`pact_place_corridor_v10_11_preview_onebottle`. Because the hub numbers releases
+while this repo names benches, the two cannot be derived from each other, so
+`HUB_DATASET_TAGS` and `environment_version_for_hub_tag()` in `contracts.py` hold
+the mapping, and the config is additionally registered as
+`FrankaSkinPactPlaceV12Config`. Resolve a dataset through those rather than by
+matching version numbers by eye: `v12` sits closest in name to V10.10 and
+V10.11c/d, which are different benches. Its published manifests record
 `sampler_class` as `PactPlaceCorridorV1010FourObjectSampler`, since the released
 episodes were collected by overlaying that sampler rather than by subclassing
 it, and that value is preserved so those manifests still resolve.

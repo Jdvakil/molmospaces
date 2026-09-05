@@ -4,6 +4,8 @@ import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from molmo_spaces.data_generation.pact_place.contracts import (
     INTRUSION_SIDES,
     POSE_IDS,
@@ -355,6 +357,49 @@ def test_v1011_preview_is_the_v1010_row_over_the_preview_scene() -> None:
     for house in range(len(cells)):
         auto = sampler._auto_manifest_row_for_house(house)
         assert auto["environment_version"] == V1011_PREVIEW_ENVIRONMENT_VERSION
+
+
+def test_published_hub_tags_resolve_to_their_environments(monkeypatch) -> None:
+    """A hub tag must resolve, because the near misses are different benches.
+
+    Someone holding a published dataset knows only its tag. ``v12`` is not
+    derivable from ``pact_place_corridor_v10_11_preview_onebottle``, and the
+    names it sits closest to (V10.10, V10.11c, V10.11d) are other environments,
+    so an unresolvable tag invites picking one of those by mistake.
+    """
+    monkeypatch.setenv("MLSPACES_ASSETS_DIR", str(Path.home() / ".cache" / "molmo-spaces"))
+    from molmo_spaces.data_generation import config_registry
+    from molmo_spaces.data_generation.config.pact_place_datagen_configs import (
+        FrankaSkinPactPlaceV1011PreviewOneBottleConfig,
+    )
+    from molmo_spaces.data_generation.pact_place.contracts import (
+        HUB_DATASET_TAGS,
+        V1010_ENVIRONMENT_VERSION,
+        V1011C_ENVIRONMENT_VERSION,
+        environment_version_for_hub_tag,
+    )
+
+    # Every tag names an environment that is actually built here.
+    registered = {
+        config_registry.get_config_class(name)()
+        .task_sampler_config.task_sampler_class.PACT_PLACE_ENVIRONMENT_VERSION
+        for name in config_registry.list_available_configs()
+        if name.startswith("FrankaSkinPactPlace")
+    }
+    for tag, environment_version in HUB_DATASET_TAGS.items():
+        assert environment_version in registered, f"{tag} names an absent environment"
+        assert environment_version_for_hub_tag(tag) == environment_version
+        assert environment_version_for_hub_tag(f"data/{tag}") == environment_version
+
+    # The v12 alias resolves, and to the preview rather than to a neighbour.
+    aliased = config_registry.get_config_class("FrankaSkinPactPlaceV12Config")
+    assert aliased is FrankaSkinPactPlaceV1011PreviewOneBottleConfig
+    marker = aliased().task_sampler_config.task_sampler_class.PACT_PLACE_ENVIRONMENT_VERSION
+    assert marker == HUB_DATASET_TAGS["v12"]
+    assert marker not in (V1010_ENVIRONMENT_VERSION, V1011C_ENVIRONMENT_VERSION)
+
+    with pytest.raises(KeyError):
+        environment_version_for_hub_tag("v99")
 
 
 def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:

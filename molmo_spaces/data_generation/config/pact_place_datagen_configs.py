@@ -135,6 +135,11 @@ class FrankaSkinPactPlaceV107SpacedBenchConfig(_PactPlaceBaseConfig):
 
 
 @register_config("FrankaSkinPactPlaceV1011PreviewOneBottleConfig")
+# The hub tag is the name people and tools actually search for, and it is not
+# guessable from the environment marker. Without this alias `v12` resolves to
+# nothing and the nearest hits are V10.10 and V10.11c/d, which are different
+# benches. See HUB_DATASET_TAGS for the full tag mapping.
+@register_config("FrankaSkinPactPlaceV12Config")
 class FrankaSkinPactPlaceV1011PreviewOneBottleConfig(_PactPlaceBaseConfig):
     """V10.11 preview: one inbound bottle, ten kitchen objects standing behind it.
 

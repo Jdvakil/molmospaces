@@ -1580,7 +1580,7 @@ class PactPlaceCorridorV107SpacedBenchSampler(_PactPlaceStaticPendantSampler):
 
 # Bench height per standing-kitchen UID and yaw, measured once by compiling the
 # asset on its own. Compilation is the expensive part, so it is cached.
-_V12_SIT_Z: dict[str, float] = {}
+_V1011_PREVIEW_SIT_Z: dict[str, float] = {}
 
 
 def _v1011_preview_candidate_xy(*, prefer_empty: bool = False) -> tuple[tuple[float, float], ...]:
@@ -1694,7 +1694,7 @@ def _v1011_preview_sit_on_bench(
     uid: str, xy: tuple[float, float], *, yaw_deg: float = 0.0
 ) -> tuple[list[float], list[float]]:
     key = f"{uid}:{float(yaw_deg):.1f}"
-    if key not in _V12_SIT_Z:
+    if key not in _V1011_PREVIEW_SIT_Z:
         spec = mujoco.MjSpec.from_file(str(_v1011_preview_install_uid(uid)))
         body = spec.worldbody.bodies[0]
         for joint in list(spec.joints):
@@ -1705,8 +1705,8 @@ def _v1011_preview_sit_on_bench(
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
         low, _high = _v1011_preview_subtree_aabb(model, data, body.name, hull="primitive")
-        _V12_SIT_Z[key] = V1011_PREVIEW_BENCH_Z - float(low[2]) + 0.001
-    return [float(xy[0]), float(xy[1]), _V12_SIT_Z[key]], _v1011_preview_stand_quat(yaw_deg)
+        _V1011_PREVIEW_SIT_Z[key] = V1011_PREVIEW_BENCH_Z - float(low[2]) + 0.001
+    return [float(xy[0]), float(xy[1]), _V1011_PREVIEW_SIT_Z[key]], _v1011_preview_stand_quat(yaw_deg)
 
 
 def _v1011_preview_attach_standing_kitchen(spec: mujoco.MjSpec) -> list[str]:
@@ -2183,7 +2183,11 @@ def _v1011_preview_keep_glass_inside_blue_tray(policy) -> None:
 
 
 class PactPlaceCorridorV1011PreviewOneBottleSampler(PactPlaceCorridorV1010FourObjectSampler):
-    """V12 preview bench: the V10.10 four-object row plus ten standing extras.
+    """V10.11 preview bench: the V10.10 four-object row plus ten standing extras.
+
+    This is the sampler behind the hub's ``data/v12``. That tag is a release
+    label, not a bench version, so it is named here to keep the environment
+    findable from the dataset it produced.
 
     The V10.10 household is edited down to one inbound bottle pulled toward the
     robot, and ten kitchen meshes are stood on the bench as mocap bodies. Their
