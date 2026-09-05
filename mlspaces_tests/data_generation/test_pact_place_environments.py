@@ -8,15 +8,21 @@ from molmo_spaces.data_generation.pact_place.contracts import (
     INTRUSION_SIDES,
     POSE_IDS,
     V95_LAYOUT_FAMILY_IDS,
+    V107_SPACED_DECOR_SLOTS,
+    V107_SPACED_ENVIRONMENT_VERSION,
     V1010_ACTIVE_SLOTS,
     V1010_ACTIVE_UIDS,
+    V1010_ENVIRONMENT_VERSION,
     V1010_INACTIVE_SLOTS,
     V1010_SCENE_BY_POSE,
     build_v95_manifest_row,
+    build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
     load_v95_palette,
+    load_v107_spaced_palette,
     sha256_payload,
     v95_cell,
+    v107_spaced_cell,
     v1010_cell,
 )
 from molmo_spaces.tasks.pact_place_contact_audit import classify_contact
@@ -54,6 +60,81 @@ EXPECTED_V95_PAYLOAD_HASHES = {
     ),
     ("F3_aperture_side_stagger", "right"): (
         "5a15b28db0e51fd96a814040f57a578e6f1f7a6752228002414e89528ec1aa23"
+    ),
+}
+
+EXPECTED_V107_SPACED_PAYLOAD_HASHES = {
+    ("F0_target_side_stagger", "left", "neg5"): (
+        "d1ce4cb0ab0db8a9f7dbec387ba6d4068272c6dc5bae373a972887d10052cb07"
+    ),
+    ("F0_target_side_stagger", "left", "center"): (
+        "7c7d21f87ee351ed840832f3dc5a91d265c2c81eca24591f932dd3b5e4666950"
+    ),
+    ("F0_target_side_stagger", "left", "pos5"): (
+        "0b9dc0d3786ca3ddd97ff5b0cbb5e1543add81c17f7bb35a318a71cec1fab3e8"
+    ),
+    ("F0_target_side_stagger", "right", "neg5"): (
+        "47198b1aae37446ad1d9a9b5c3ed231931356f623c3c5a28d0c610b5ad2e6962"
+    ),
+    ("F0_target_side_stagger", "right", "center"): (
+        "9ad111b423e528b918328ef041cf05f6c827fcd339f809bfc9bf0f250ae5849d"
+    ),
+    ("F0_target_side_stagger", "right", "pos5"): (
+        "c58eff9d6b632744167dccb913aab6cb3ffb232a8f6338dd986a45f8293585ef"
+    ),
+    ("F1_inner_panel_stagger", "left", "neg5"): (
+        "7e1ba00ff25ed8c227ac773060687015b820556035fdbf7e9dffbb7e807c8b15"
+    ),
+    ("F1_inner_panel_stagger", "left", "center"): (
+        "9e2ec3bfc0fc08b7db57c0c1a8013591c41b905008b57229805051a6bf806a7f"
+    ),
+    ("F1_inner_panel_stagger", "left", "pos5"): (
+        "78eb9dff4ade33a712b8f741a15798d0c88bfb9b57d2849dc37e8a1737a038a1"
+    ),
+    ("F1_inner_panel_stagger", "right", "neg5"): (
+        "691e13cc876e69c9f825e77e337f06240a7bc11136309f373e56660c3664b241"
+    ),
+    ("F1_inner_panel_stagger", "right", "center"): (
+        "765e4ae0e41e6cc5d177bf5fcb6cac3cb53f7f465fa37eebd28efdbcfd22e5df"
+    ),
+    ("F1_inner_panel_stagger", "right", "pos5"): (
+        "3b5ad2eca44db869581d2a6c6174098004fd8ab20fa6e0e986a540ec98d12024"
+    ),
+    ("F2_outer_panel_stagger", "left", "neg5"): (
+        "9f802217ea162104cfeffc476d727c00311187bedea2ede95c66c33cf4d06486"
+    ),
+    ("F2_outer_panel_stagger", "left", "center"): (
+        "07ef8fe73deb60494e54ddb33b65a2e3e9a5221557da6b6c296b78ed937368ef"
+    ),
+    ("F2_outer_panel_stagger", "left", "pos5"): (
+        "7ad0a50f9bbe36fb784e3d803321e0a7ff98f1d14bc3a03d73b26350f407ad83"
+    ),
+    ("F2_outer_panel_stagger", "right", "neg5"): (
+        "0fbf4797e614b39b5ab71c42a3959f773a80c68a38d182aecce4d013ee3a9716"
+    ),
+    ("F2_outer_panel_stagger", "right", "center"): (
+        "da7130c56e1425a9d14755bfcdaab9d8827c0d29ff86fd30d141758a6088bf94"
+    ),
+    ("F2_outer_panel_stagger", "right", "pos5"): (
+        "0b6d2bd6591ea36ba50da2a53a1be4aff92fd77e119c56d80d691c63e29af9d8"
+    ),
+    ("F3_aperture_side_stagger", "left", "neg5"): (
+        "eeeb213fc524b10da31cb264ff5dd45ceb06b2a5bd54bc168e74c15af294bd4d"
+    ),
+    ("F3_aperture_side_stagger", "left", "center"): (
+        "5b3fc9702cd151926eb0a3a86276de41c5d7684defa848cfe46e100f7a81e02a"
+    ),
+    ("F3_aperture_side_stagger", "left", "pos5"): (
+        "63d8ab77741f83f28287edc6cbdf6d69174c112d4211e597fcc01197ff628815"
+    ),
+    ("F3_aperture_side_stagger", "right", "neg5"): (
+        "b71763bd07bf68880b956edb07d4ad360ef654da18eb8d5ad2abd0c81de5325b"
+    ),
+    ("F3_aperture_side_stagger", "right", "center"): (
+        "9c1bec85f2776c64fd4b63fd53c5dd43ce58107b5b8bf1c54cbb947a59d300cf"
+    ),
+    ("F3_aperture_side_stagger", "right", "pos5"): (
+        "9415f16c67b5b71241ff4c6a7413b4edd3126bae6365bab4e172d4d049e9388d"
     ),
 }
 
@@ -119,6 +200,38 @@ def test_v1010_has_24_balanced_cells_and_exactly_four_live_objects() -> None:
         assert active == V1010_ACTIVE_UIDS
         identity_hashes.add(row["pact_v1010_identity_sha256"])
     assert identity_hashes == {"70f5cab5f76a58b82a616ba5e34251a3db950e18497b92e61539d3e18c5505a6"}
+
+
+def test_v107_spaced_activates_all_eight_slots_and_matches_the_sealed_contract() -> None:
+    palette = load_v107_spaced_palette()
+    assert sha256_payload(palette) == (
+        "c07077777595c1f1754125361bf0271a34d717b29afdf8ef18e4c4739d89754a"
+    )
+    # Two V9.5 vessels plus six naturally tall standing decor objects, none of
+    # which is stretched to reach its height.
+    assert len(palette["palette"]) == 8
+    assert palette["selection_policy"]["stretch_meshes"] is False
+    decor = [item for item in palette["palette"] if item["role"] == "decor"]
+    assert tuple(sorted(item["slot"] for item in decor)) == V107_SPACED_DECOR_SLOTS
+    assert all(item["dimensions_m"][2] >= 0.11 for item in decor)
+
+    cells = [v107_spaced_cell(index) for index in range(24)]
+    assert cells == [
+        (family, side, pose)
+        for family in V95_LAYOUT_FAMILY_IDS
+        for side in INTRUSION_SIDES
+        for pose in POSE_IDS
+    ]
+    assert len(set(cells)) == 24
+
+    for cell in cells:
+        row = build_v107_spaced_manifest_row(*cell)
+        # The whole bench is live here; nothing is parked outside the workspace.
+        assert len(row["pact_clutter_layout"]["objects"]) == 8
+        assert row["environment_version"] == V107_SPACED_ENVIRONMENT_VERSION
+        # The pendant scene is inherited from V10.10 byte-for-byte.
+        assert row["pact_v106_scene_sha256"] == V1010_SCENE_BY_POSE[cell[2]]["sha256"]
+        assert sha256_payload(row) == EXPECTED_V107_SPACED_PAYLOAD_HASHES[cell]
 
 
 def test_scene_files_are_exact_and_pendant_is_compiled_static() -> None:
@@ -199,6 +312,7 @@ def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
     from molmo_spaces.data_generation.config.pact_place_datagen_configs import (
         FrankaSkinPactPlaceV5Config,
         FrankaSkinPactPlaceV95RealClutterConfig,
+        FrankaSkinPactPlaceV107SpacedBenchConfig,
         FrankaSkinPactPlaceV1010FourObjectConfig,
         FrankaSkinPactPlaceV1011CMixedClutterConfig,
         FrankaSkinPactPlaceV1011DRandomizedClutterConfig,
@@ -211,6 +325,12 @@ def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
             8,
             900,
             "PactPlaceCorridorV93Sampler",
+        ),
+        (
+            FrankaSkinPactPlaceV107SpacedBenchConfig,
+            24,
+            1050,
+            "PactPlaceCorridorV107SpacedBenchSampler",
         ),
         (
             FrankaSkinPactPlaceV1010FourObjectConfig,
@@ -255,6 +375,7 @@ def test_public_task_module_does_not_export_failed_variants() -> None:
         "PactPlaceCorridorTask",
         "PactPlaceCorridorV2Sampler",
         "PactPlaceCorridorV93Sampler",
+        "PactPlaceCorridorV107SpacedBenchSampler",
         "PactPlaceCorridorV1010FourObjectSampler",
         "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
         "PactPlaceCorridorV1011DRandomizedLayoutSampler",
@@ -277,6 +398,7 @@ def test_public_task_module_does_not_export_failed_variants() -> None:
 
 def test_reused_sampler_advances_auto_rows_but_never_rewrites_explicit_rows() -> None:
     from molmo_spaces.tasks.pact_place import (
+        PactPlaceCorridorV107SpacedBenchSampler,
         PactPlaceCorridorV1010FourObjectSampler,
         PactPlaceV5Sampler,
         PactPlaceV95RealClutterSampler,
@@ -317,6 +439,27 @@ def test_reused_sampler_advances_auto_rows_but_never_rewrites_explicit_rows() ->
         row = v1010._ensure_manifest_row()
         cells_with_pose.append((row["family_id"], row["intrusion_side"], row["pose_id"]))
     assert cells_with_pose == [v1010_cell(index) for index in range(24)]
+
+    # A successor that ships its own palette must override both row hooks, or it
+    # silently inherits a V9.5/V10.10 row and collects the wrong environment.
+    spaced = bare(PactPlaceCorridorV107SpacedBenchSampler)
+    spaced_cells = []
+    for index in range(24):
+        select_house(spaced, index)
+        row = spaced._ensure_manifest_row()
+        assert row["environment_version"] == V107_SPACED_ENVIRONMENT_VERSION
+        assert row["environment_version"] != V1010_ENVIRONMENT_VERSION
+        assert len(row["pact_clutter_layout"]["objects"]) == 8
+        spaced_cells.append((row["family_id"], row["intrusion_side"], row["pose_id"]))
+    assert spaced_cells == [v107_spaced_cell(index) for index in range(24)]
+    # sample_task binds the auto row before current_house_index exists, so the
+    # static-pendant hook has to agree with _ensure_manifest_row.
+    for index in range(24):
+        auto = PactPlaceCorridorV107SpacedBenchSampler._auto_manifest_row_for_house(index)
+        assert auto["environment_version"] == V107_SPACED_ENVIRONMENT_VERSION
+        assert (auto["family_id"], auto["intrusion_side"], auto["pose_id"]) == v107_spaced_cell(
+            index
+        )
 
     explicit = build_v1010_manifest_row(V95_LAYOUT_FAMILY_IDS[-1], "right", "pos5")
     v1010.set_pact_manifest_row(explicit)

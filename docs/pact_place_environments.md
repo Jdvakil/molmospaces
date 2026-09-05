@@ -11,6 +11,7 @@ variants.
 |---|---|---|---:|
 | `FrankaSkinPactPlaceV5Config` | V5 | Hidden left/right intrusion panel, target cup, outside placement tray; no household clutter | 2 |
 | `FrankaSkinPactPlaceV95RealClutterConfig` | V9.5 real-clutter lineage | V5 shell, active left/right panel, eight movable Objaverse household objects, including two route-bearing bottles | 8 |
+| `FrankaSkinPactPlaceV107SpacedBenchConfig` | V10.7 spaced bench | V10.10 pendant scenes with all eight palette slots live, spread across the bench as naturally tall standing objects | 24 |
 | `FrankaSkinPactPlaceV1010FourObjectConfig` | V10.10 | V9.5 route layout with four live household objects and a two-lobe static pendant | 24 |
 | `FrankaSkinPactPlaceV1011CMixedClutterConfig` | V10.11c | Six live bodies: three mesh props and three runtime MuJoCo primitives, two of them sampled near the target | 24 |
 | `FrankaSkinPactPlaceV1011DRandomizedClutterConfig` | V10.11d | V10.11c clutter with every clutter position redrawn per episode | 24 |
@@ -37,6 +38,23 @@ The four live household objects are:
 The remaining four V9.5 palette assets stay compiled but are parked outside the
 workspace. This keeps the observation and asset-installation contract aligned
 with the eight-object lineage.
+
+V10.7 spaced bench reuses the same three pendant scenes and the same V9.5
+palette assets as V10.10, but parks nothing: all eight slots are live. The two
+route vessels move to a spaced arrangement, with the outbound bottle forward at
+`x=0.68` as the route blocker and the inbound glass back in the otherwise empty
+mid-bench at `x=1.02`, staggered in `y` toward the panel side. The remaining six
+slots become standing decor on side rails at `y = +/-0.28` to `+/-0.36`.
+
+Every decor object is a naturally tall accepted asset used at its measured size;
+none is stretched to reach its height. Two soap-bottle meshes are declared as
+`vase` and `pot` because the two route vessels already consume both `soapbottle`
+entries under the V9 per-category cap of two. Decor keeps a 40 mm clearance from
+everything, while the two vessels keep V9's 10 mm, so the bench is densely
+populated without closing either route detour. The point of the lineage is
+sensing coverage: with objects across the full table, the link-5/link-6
+proximity skin has something to register throughout the episode rather than only
+near the route.
 
 V10.11c reuses the V10.10 pendant scenes and route unchanged and activates six
 clutter bodies instead of four. Three are the existing mesh assets and three are
@@ -100,6 +118,10 @@ python -m molmo_spaces.data_generation.main \
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV95RealClutterConfig
 
+# V10.7 spaced bench: all eight slots live, one episode per cell.
+python -m molmo_spaces.data_generation.main \
+  molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV107SpacedBenchConfig
+
 # V10.10: one episode for each family x side x pendant-pose cell.
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1010FourObjectConfig
@@ -132,12 +154,16 @@ The cell builders are public and deterministic:
 ```python
 from molmo_spaces.data_generation.pact_place.contracts import (
     build_v95_manifest_row,
+    build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
     build_v1011c_manifest_row,
     build_v1011d_manifest_row,
 )
 
 v95_row = build_v95_manifest_row("F0_target_side_stagger", "left")
+v107_spaced_row = build_v107_spaced_manifest_row(
+    "F0_target_side_stagger", "left", "center"
+)
 v1010_row = build_v1010_manifest_row(
     "F0_target_side_stagger", "left", "center"
 )

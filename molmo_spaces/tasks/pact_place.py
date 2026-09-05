@@ -3709,6 +3709,7 @@ __all__ = [
     "PactPlaceCorridorTask",
     "PactPlaceCorridorV2Sampler",
     "PactPlaceCorridorV93Sampler",
+    "PactPlaceCorridorV107SpacedBenchSampler",
     "PactPlaceCorridorV1010FourObjectSampler",
     # V10.11a/b are intermediate bases for V10.11c and are deliberately not
     # exported; only the two qualified endpoints are public.
