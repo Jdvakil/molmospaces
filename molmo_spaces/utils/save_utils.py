@@ -19,6 +19,24 @@ log = logging.getLogger(__name__)
 COMPR = "lzf"  # default H5 compression to use.
 
 
+def _json_default(value: Any) -> Any:
+    """Encode values ``json`` rejects, so one of them cannot drop an episode.
+
+    Scene parameters are assembled from MuJoCo and numpy, so a predicate that
+    reads as a plain ``bool`` is frequently ``numpy.bool_``. This runs only for
+    values ``json`` already refused, so it cannot change existing output.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (set, frozenset)):
+        return sorted(value)
+    if isinstance(value, Path):
+        return str(value)
+    return str(value)
+
+
 def is_camera_sensor(sensor_name: str, sensor_suite: SensorSuite | None = None) -> bool:
     """
     Determine if a sensor corresponds to a camera (RGB or depth) that produces image data.
@@ -371,7 +389,7 @@ def prepare_episode_for_saving(
 
     # Add obs_scene if present
     if "obs_scene" in history:
-        batched_data["obs_scene"] = json.dumps(history["obs_scene"])
+        batched_data["obs_scene"] = json.dumps(history["obs_scene"], default=_json_default)
 
     # Final GC to clean up any remaining references
     gc.collect()
