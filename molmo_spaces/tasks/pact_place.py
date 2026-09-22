@@ -31,6 +31,10 @@ from molmo_spaces.configs.policy_configs import (
 from molmo_spaces.data_generation.pact_place.contracts import (
     V107_SPACED_ENVIRONMENT_VERSION,
     V1010_ENVIRONMENT_VERSION,
+    V1010_TWO_OBJECT_ACTIVE_SLOTS,
+    V1010_TWO_OBJECT_ACTIVE_UIDS,
+    V1010_TWO_OBJECT_ENVIRONMENT_VERSION,
+    V1010_TWO_OBJECT_INACTIVE_SLOTS,
     V1011_PREVIEW_BENCH_Z,
     V1011_PREVIEW_BOTTLE_MIN_X_M,
     V1011_PREVIEW_CLEAR_PAD_M,
@@ -51,6 +55,7 @@ from molmo_spaces.data_generation.pact_place.contracts import (
     build_v95_manifest_row,
     build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
+    build_v1010_two_object_manifest_row,
     build_v1011_preview_manifest_row,
     build_v1011c_manifest_row,
     build_v1011d_manifest_row,
@@ -107,9 +112,13 @@ PACT_PLACE_V1011C_ENVIRONMENT_VERSION = (
 PACT_PLACE_V1011D_ENVIRONMENT_VERSION = (
     "pact_place_corridor_v10_11d_randomized_clutter"
 )
+PACT_PLACE_V1010_TWO_OBJECT_ENVIRONMENT_VERSION = (
+    V1010_TWO_OBJECT_ENVIRONMENT_VERSION
+)
 PACT_PLACE_V106_LANE_ENVIRONMENT_VERSIONS = (
     PACT_PLACE_V106_ENVIRONMENT_VERSION,
     V1010_ENVIRONMENT_VERSION,
+    PACT_PLACE_V1010_TWO_OBJECT_ENVIRONMENT_VERSION,
     PACT_PLACE_V1011_ENVIRONMENT_VERSION,
     PACT_PLACE_V1011B_ENVIRONMENT_VERSION,
     PACT_PLACE_V1011C_ENVIRONMENT_VERSION,
@@ -1547,6 +1556,47 @@ class PactPlaceCorridorV1010FourObjectSampler(_PactPlaceStaticPendantSampler):
                 f"V10.10 expected {self.ACTIVE_CLUTTER_COUNT} active clutter bodies, "
                 f"got {len(active)}: {active}"
             )
+
+
+class PactPlaceCorridorV1010TwoObjectSampler(PactPlaceCorridorV1010FourObjectSampler):
+    """V10.10 corridor with only the two route-bearing bottles live.
+
+    Same scenes, pendant, cameras, and expert as four-object V10.10. The two
+    plates (slots 03/04) join the already-parked decor. The corridor task is
+    unchanged: slot 01 is still the outbound blocker and slot 06 the inbound
+    vessel. Published on the hub as ``data/v6``.
+    """
+
+    PACT_PLACE_ENVIRONMENT_VERSION = V1010_TWO_OBJECT_ENVIRONMENT_VERSION
+    ACTIVE_CLUTTER_SLOTS = V1010_TWO_OBJECT_ACTIVE_SLOTS
+    INACTIVE_CLUTTER_SLOTS = V1010_TWO_OBJECT_INACTIVE_SLOTS
+    ACTIVE_CLUTTER_COUNT = len(V1010_TWO_OBJECT_ACTIVE_SLOTS)
+    EXPECTED_ACTIVE_UIDS = dict(V1010_TWO_OBJECT_ACTIVE_UIDS)
+
+    @staticmethod
+    def _auto_manifest_row_for_house(house_index: int) -> dict[str, Any]:
+        family, side, pose = v1010_cell(house_index)
+        return build_v1010_two_object_manifest_row(family, side, pose)
+
+    def _ensure_manifest_row(self) -> dict[str, Any]:
+        if self._pact_manifest_row_is_explicit:
+            row = self._pact_manifest_row or {}
+            if "pose_id" not in row:
+                raise ValueError("an explicit V10.10 two-object manifest row must bind pose_id")
+            return row
+        try:
+            house_index = int(self.current_house_index)
+        except (AttributeError, TypeError, ValueError):
+            house_index = 0
+        if self._pact_manifest_row is None or self._pact_auto_house_index != house_index:
+            self._pact_manifest_row = self._auto_manifest_row_for_house(house_index)
+            self._pact_auto_house_index = house_index
+        return self._pact_manifest_row
+
+    def _layout(self):
+        layout = super()._layout()
+        layout["layout_id"] = layout["layout_id"].replace("_v1010_4obj", "_v1010_2obj")
+        return layout
 
 
 class PactPlaceCorridorV107SpacedBenchSampler(_PactPlaceStaticPendantSampler):
@@ -4464,6 +4514,7 @@ __all__ = [
     "PactPlaceCorridorV107SpacedBenchSampler",
     "PactPlaceCorridorV1011PreviewOneBottleSampler",
     "PactPlaceCorridorV1010FourObjectSampler",
+    "PactPlaceCorridorV1010TwoObjectSampler",
     # V10.11a/b are intermediate bases for V10.11c and are deliberately not
     # exported; only the two qualified endpoints are public.
     "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",

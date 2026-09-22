@@ -16,11 +16,16 @@ from molmo_spaces.data_generation.pact_place.contracts import (
     V1010_ACTIVE_SLOTS,
     V1010_ACTIVE_UIDS,
     V1010_ENVIRONMENT_VERSION,
+    V1010_TWO_OBJECT_ACTIVE_SLOTS,
+    V1010_TWO_OBJECT_ACTIVE_UIDS,
+    V1010_TWO_OBJECT_ENVIRONMENT_VERSION,
+    V1010_TWO_OBJECT_INACTIVE_SLOTS,
     V1010_INACTIVE_SLOTS,
     V1010_SCENE_BY_POSE,
     build_v95_manifest_row,
     build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
+    build_v1010_two_object_manifest_row,
     load_v95_palette,
     load_v107_spaced_palette,
     sha256_payload,
@@ -203,6 +208,25 @@ def test_v1010_has_24_balanced_cells_and_exactly_four_live_objects() -> None:
         assert active == V1010_ACTIVE_UIDS
         identity_hashes.add(row["pact_v1010_identity_sha256"])
     assert identity_hashes == {"70f5cab5f76a58b82a616ba5e34251a3db950e18497b92e61539d3e18c5505a6"}
+
+
+def test_v1010_two_object_keeps_only_the_route_bottles() -> None:
+    four = build_v1010_manifest_row("F0_target_side_stagger", "left", "center")
+    two = build_v1010_two_object_manifest_row("F0_target_side_stagger", "left", "center")
+    assert two["environment_version"] == V1010_TWO_OBJECT_ENVIRONMENT_VERSION
+    assert two["sampler_class"] == "PactPlaceCorridorV1010TwoObjectSampler"
+    assert two["pact_v106_scene_sha256"] == four["pact_v106_scene_sha256"]
+    assert tuple(two["pact_v1010_active_clutter_slots"]) == V1010_TWO_OBJECT_ACTIVE_SLOTS
+    assert tuple(two["pact_v1010_inactive_clutter_slots"]) == V1010_TWO_OBJECT_INACTIVE_SLOTS
+    assert two["pact_v1010_active_clutter_uids"] == dict(V1010_TWO_OBJECT_ACTIVE_UIDS)
+    assert two["pact_v1010_identity_sha256"] != four["pact_v1010_identity_sha256"]
+    from molmo_spaces.tasks.pact_place import PactPlaceCorridorV1010TwoObjectSampler
+
+    for hook in ("_ensure_manifest_row", "_auto_manifest_row_for_house"):
+        assert hook in PactPlaceCorridorV1010TwoObjectSampler.__dict__
+    auto = PactPlaceCorridorV1010TwoObjectSampler._auto_manifest_row_for_house(0)
+    assert auto["environment_version"] == V1010_TWO_OBJECT_ENVIRONMENT_VERSION
+    assert auto["pact_v1010_active_clutter_count"] == 2
 
 
 def test_v107_spaced_activates_all_eight_slots_and_matches_the_sealed_contract() -> None:
@@ -443,8 +467,21 @@ def test_published_hub_tags_resolve_to_their_environments(monkeypatch) -> None:
         assert marker == HUB_DATASET_TAGS["v12"]
         assert marker not in (V1010_ENVIRONMENT_VERSION, V1011C_ENVIRONMENT_VERSION)
 
-    # Only v12 needs a registry alias. The other hub tags already match
-    # their config names closely enough that they do not get a second entry.
+    # v6 is the same kind of non-derivable hub tag: the bench is V10.10
+    # two-object, not a neighbour four-object / v12 / v1011d config.
+    from molmo_spaces.data_generation.config.pact_place_datagen_configs import (
+        FrankaSkinPactPlaceV1010TwoObjectConfig,
+    )
+    from molmo_spaces.data_generation.pact_place.contracts import (
+        V1010_TWO_OBJECT_ENVIRONMENT_VERSION,
+    )
+
+    for alias in ("FrankaSkinPactPlaceV6Config", "v6"):
+        aliased = config_registry.get_config_class(alias)
+        assert aliased is FrankaSkinPactPlaceV1010TwoObjectConfig
+        marker = aliased().task_sampler_config.task_sampler_class.PACT_PLACE_ENVIRONMENT_VERSION
+        assert marker == HUB_DATASET_TAGS["v6"] == V1010_TWO_OBJECT_ENVIRONMENT_VERSION
+        assert marker != V1010_ENVIRONMENT_VERSION
 
     with pytest.raises(KeyError):
         environment_version_for_hub_tag("v99")
@@ -458,6 +495,7 @@ def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
         FrankaSkinPactPlaceV95RealClutterConfig,
         FrankaSkinPactPlaceV107SpacedBenchConfig,
         FrankaSkinPactPlaceV1010FourObjectConfig,
+        FrankaSkinPactPlaceV1010TwoObjectConfig,
         FrankaSkinPactPlaceV1011CMixedClutterConfig,
         FrankaSkinPactPlaceV1011DRandomizedClutterConfig,
         FrankaSkinPactPlaceV1011PreviewOneBottleConfig,
@@ -489,6 +527,13 @@ def test_public_configs_expose_only_the_supported_lineages(monkeypatch) -> None:
             24,
             1050,
             "PactPlaceCorridorV1010FourObjectSampler",
+            wrist_only,
+        ),
+        (
+            FrankaSkinPactPlaceV1010TwoObjectConfig,
+            24,
+            1050,
+            "PactPlaceCorridorV1010TwoObjectSampler",
             wrist_only,
         ),
         (
@@ -544,6 +589,7 @@ def test_public_task_module_does_not_export_failed_variants() -> None:
         "PactPlaceCorridorV93Sampler",
         "PactPlaceCorridorV107SpacedBenchSampler",
         "PactPlaceCorridorV1010FourObjectSampler",
+        "PactPlaceCorridorV1010TwoObjectSampler",
         "PactPlaceCorridorV1011C33PctTallerPrimitiveSampler",
         "PactPlaceCorridorV1011DRandomizedLayoutSampler",
         "PactPlaceCorridorV1011PreviewOneBottleSampler",
@@ -568,6 +614,7 @@ def test_reused_sampler_advances_auto_rows_but_never_rewrites_explicit_rows() ->
     from molmo_spaces.tasks.pact_place import (
         PactPlaceCorridorV107SpacedBenchSampler,
         PactPlaceCorridorV1010FourObjectSampler,
+        PactPlaceCorridorV1010TwoObjectSampler,
         PactPlaceV5Sampler,
         PactPlaceV95RealClutterSampler,
     )
@@ -607,6 +654,17 @@ def test_reused_sampler_advances_auto_rows_but_never_rewrites_explicit_rows() ->
         row = v1010._ensure_manifest_row()
         cells_with_pose.append((row["family_id"], row["intrusion_side"], row["pose_id"]))
     assert cells_with_pose == [v1010_cell(index) for index in range(24)]
+
+    two_object = bare(PactPlaceCorridorV1010TwoObjectSampler)
+    two_cells = []
+    for index in range(24):
+        select_house(two_object, index)
+        row = two_object._ensure_manifest_row()
+        assert row["environment_version"] == V1010_TWO_OBJECT_ENVIRONMENT_VERSION
+        assert row["environment_version"] != V1010_ENVIRONMENT_VERSION
+        assert row["pact_v1010_active_clutter_count"] == 2
+        two_cells.append((row["family_id"], row["intrusion_side"], row["pose_id"]))
+    assert two_cells == [v1010_cell(index) for index in range(24)]
 
     # A successor that ships its own palette must override both row hooks, or it
     # silently inherits a V9.5/V10.10 row and collects the wrong environment.
