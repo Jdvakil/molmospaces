@@ -13,6 +13,7 @@ variants.
 | `FrankaSkinPactPlaceV95RealClutterConfig` | V9.5 real-clutter lineage | V5 shell, active left/right panel, eight movable Objaverse household objects, including two route-bearing bottles | 8 |
 | `FrankaSkinPactPlaceV107SpacedBenchConfig` | V10.7 spaced bench | V10.10 pendant scenes with all eight palette slots live, spread across the bench as naturally tall standing objects | 24 |
 | `FrankaSkinPactPlaceV1010FourObjectConfig` | V10.10 | V9.5 route layout with four live household objects and a two-lobe static pendant | 24 |
+| `FrankaSkinPactPlaceV1010TwoObjectConfig` | V10.10 two-object (hub `v6`) | Same V10.10 pendant scenes and route, with only the two route-bearing bottles live | 24 |
 | `FrankaSkinPactPlaceV1011PreviewOneBottleConfig` | V10.11 preview (one bottle) | V10.10 route with the household cut to a single inbound bottle pulled toward the robot, plus ten kitchen objects standing on the bench | 8 |
 | `FrankaSkinPactPlaceV1011CMixedClutterConfig` | V10.11c | Six live bodies: three mesh props and three runtime MuJoCo primitives, two of them sampled near the target | 24 |
 | `FrankaSkinPactPlaceV1011DRandomizedClutterConfig` | V10.11d | V10.11c clutter with every clutter position redrawn per episode | 24 |
@@ -39,6 +40,12 @@ The four live household objects are:
 The remaining four V9.5 palette assets stay compiled but are parked outside the
 workspace. This keeps the observation and asset-installation contract aligned
 with the eight-object lineage.
+
+V10.10 two-object is the same 24-cell corridor with the plates parked as well.
+Only slot 01 (`Soap_Bottle_30`) and slot 06 (`Soap_Bottle_11`) stay live. On the
+hub it appears as `data/v6`; the environment marker is
+`pact_place_corridor_v10_10_two_object`. `HUB_DATASET_TAGS` maps that tag, and
+the config is also registered as `FrankaSkinPactPlaceV6Config` and `v6`.
 
 V10.7 spaced bench reuses the same three pendant scenes and the same V9.5
 palette assets as V10.10, but parks nothing: all eight slots are live. The two
@@ -172,6 +179,10 @@ python -m molmo_spaces.data_generation.main \
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1010FourObjectConfig
 
+# V10.10 two-object / hub v6: same cells, only the two route bottles live.
+python -m molmo_spaces.data_generation.main \
+  molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1010TwoObjectConfig
+
 # V10.11 preview: one inbound bottle plus a standing kitchen, table camera on.
 python -m molmo_spaces.data_generation.main \
   molmo_spaces.data_generation.config.pact_place_datagen_configs:FrankaSkinPactPlaceV1011PreviewOneBottleConfig
@@ -206,6 +217,7 @@ from molmo_spaces.data_generation.pact_place.contracts import (
     build_v95_manifest_row,
     build_v107_spaced_manifest_row,
     build_v1010_manifest_row,
+    build_v1010_two_object_manifest_row,
     build_v1011c_manifest_row,
     build_v1011d_manifest_row,
 )
@@ -215,6 +227,9 @@ v107_spaced_row = build_v107_spaced_manifest_row(
     "F0_target_side_stagger", "left", "center"
 )
 v1010_row = build_v1010_manifest_row(
+    "F0_target_side_stagger", "left", "center"
+)
+v6_row = build_v1010_two_object_manifest_row(
     "F0_target_side_stagger", "left", "center"
 )
 v1011c_row = build_v1011c_manifest_row(

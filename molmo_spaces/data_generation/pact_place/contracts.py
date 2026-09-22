@@ -70,6 +70,13 @@ V1010_ACTIVE_UIDS = {
     "04": "Plate_22",
     "06": "Soap_Bottle_11",
 }
+V1010_TWO_OBJECT_ENVIRONMENT_VERSION = "pact_place_corridor_v10_10_two_object"
+V1010_TWO_OBJECT_ACTIVE_SLOTS = ("01", "06")
+V1010_TWO_OBJECT_INACTIVE_SLOTS = ("00", "02", "03", "04", "05", "07")
+V1010_TWO_OBJECT_ACTIVE_UIDS = {
+    "01": "Soap_Bottle_30",
+    "06": "Soap_Bottle_11",
+}
 V1010_ASSEMBLY = {"x_m": 0.800, "r_neg_m": 0.330, "r_pos_m": 0.300}
 V1010_SCENE_BY_POSE = {
     "neg5": {
@@ -529,6 +536,43 @@ def build_v1010_manifest_row(family_id: str, intrusion_side: str, pose_id: str) 
             ]
         ).encode()
     ).hexdigest()
+    return row
+
+
+def build_v1010_two_object_manifest_row(
+    family_id: str, intrusion_side: str, pose_id: str
+) -> dict[str, Any]:
+    """V10.10 two-object row: same scenes and route, plates parked."""
+    row = build_v1010_manifest_row(family_id, intrusion_side, pose_id)
+    active = [
+        item
+        for item in row["pact_clutter_layout"]["objects"]
+        if str(item["palette_slot"]) in V1010_TWO_OBJECT_ACTIVE_SLOTS
+    ]
+    row.update(
+        {
+            "environment_version": V1010_TWO_OBJECT_ENVIRONMENT_VERSION,
+            "sampler_class": "PactPlaceCorridorV1010TwoObjectSampler",
+            "pact_v1010_active_clutter_slots": list(V1010_TWO_OBJECT_ACTIVE_SLOTS),
+            "pact_v1010_inactive_clutter_slots": list(V1010_TWO_OBJECT_INACTIVE_SLOTS),
+            "pact_v1010_active_clutter_count": len(V1010_TWO_OBJECT_ACTIVE_SLOTS),
+            "pact_v1010_active_clutter_uids": dict(V1010_TWO_OBJECT_ACTIVE_UIDS),
+            "pact_v1010_identity_sha256": hashlib.sha256(
+                canonical_json(
+                    [
+                        {
+                            "palette_slot": str(item["palette_slot"]),
+                            "uid": str(item["uid"]),
+                            "role": str(item.get("role", "")),
+                        }
+                        for item in sorted(
+                            active, key=lambda value: str(value["palette_slot"])
+                        )
+                    ]
+                ).encode()
+            ).hexdigest(),
+        }
+    )
     return row
 
 
@@ -1045,6 +1089,7 @@ def build_v1011_preview_manifest_row(
 # dataset only has the tag, so keep the mapping explicit rather than leaving it
 # to be guessed from adjacent version numbers, which name different benches.
 HUB_DATASET_TAGS: dict[str, str] = {
+    "v6": V1010_TWO_OBJECT_ENVIRONMENT_VERSION,
     "v12": V1011_PREVIEW_ENVIRONMENT_VERSION,
     "v107_spaced": V107_SPACED_ENVIRONMENT_VERSION,
     "v1011d": V1011D_ENVIRONMENT_VERSION,
@@ -1094,6 +1139,10 @@ __all__ = [
     "V1010_ACTIVE_UIDS",
     "V1010_ASSEMBLY",
     "V1010_ENVIRONMENT_VERSION",
+    "V1010_TWO_OBJECT_ACTIVE_SLOTS",
+    "V1010_TWO_OBJECT_ACTIVE_UIDS",
+    "V1010_TWO_OBJECT_ENVIRONMENT_VERSION",
+    "V1010_TWO_OBJECT_INACTIVE_SLOTS",
     "V1010_INACTIVE_SLOTS",
     "V1010_SCENE_BY_POSE",
     "V1011C_ENVIRONMENT_VERSION",
@@ -1113,6 +1162,7 @@ __all__ = [
     "build_v107_spaced_layout",
     "build_v107_spaced_manifest_row",
     "build_v1010_manifest_row",
+    "build_v1010_two_object_manifest_row",
     "build_v1011c_manifest_row",
     "build_v1011d_manifest_row",
     "load_v107_spaced_palette",
