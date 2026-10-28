@@ -1,0 +1,128 @@
+<mujoco model="pc_fumehood_push">
+  <!-- Non-prehensile push suite in the PAPER fume hood.
+
+       The frozen paper shell (room walls + ceiling, bench, hood sides/back/top,
+       frame posts, mocap sash and jambs, legacy parked bodies, outside pedestal
+       and tray) is included verbatim through pact_place_corridor_v5.xml and is
+       never edited. This file only ADDS:
+
+         * a pool of real lab items built from primitives (bottles, flask,
+           beaker, tube rack, glove box, stirrer hotplate, carboy, ring stand,
+           sharps bin, tip box, graduated cylinder). Every item is a mocap body
+           whose frame origin is the centre of its BASE, so the sampler poses
+           it at (x, y, bench_top_z) and it rests exactly on the work surface.
+           Unused items are parked under the floor. Names are pact_clutter_*
+           so contact scoring classifies them as clutter hazards.
+         * a flat goal decal (tape ring on the work surface). Contactless
+           (contype=0, conaffinity=0), 1.2 mm thick, visible to the cameras.
+
+       The pushed container itself (cavity_obj_0/push_jar) is added by the
+       task sampler at compile time (pc_fumehood_push.py). -->
+  <include file="pact_place_corridor_v5.xml"/>
+  <worldbody>
+    <!-- 2.5 L amber solvent bottle, h=0.298 -->
+    <body name="pact_clutter_solvent_bottle" mocap="true" pos="0 1.30 -2.0">
+      <geom name="pact_clutter_solvent_bottle_body_g" class="hood" type="cylinder" size="0.064 0.105" pos="0 0 0.105" rgba="0.42 0.22 0.07 1"/>
+      <geom name="pact_clutter_solvent_bottle_shoulder_g" class="hood" type="cylinder" size="0.045 0.015" pos="0 0 0.225" rgba="0.42 0.22 0.07 1"/>
+      <geom name="pact_clutter_solvent_bottle_neck_g" class="hood" type="cylinder" size="0.022 0.015" pos="0 0 0.255" rgba="0.42 0.22 0.07 1"/>
+      <geom name="pact_clutter_solvent_bottle_cap_g" class="hood" type="cylinder" size="0.025 0.014" pos="0 0 0.284" rgba="0.08 0.08 0.08 1"/>
+      <geom name="pact_clutter_solvent_bottle_label_g" type="cylinder" size="0.0645 0.045" pos="0 0 0.10" rgba="0.95 0.95 0.92 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+    <!-- 1 L media bottle, blue cap, h=0.202 -->
+    <body name="pact_clutter_media_bottle" mocap="true" pos="0 1.45 -2.0">
+      <geom name="pact_clutter_media_bottle_body_g" class="hood" type="cylinder" size="0.051 0.075" pos="0 0 0.075" rgba="0.78 0.85 0.88 1"/>
+      <geom name="pact_clutter_media_bottle_liquid_g" type="cylinder" size="0.0515 0.04" pos="0 0 0.045" rgba="0.55 0.75 0.85 1" contype="0" conaffinity="0" group="1"/>
+      <geom name="pact_clutter_media_bottle_neck_g" class="hood" type="cylinder" size="0.022 0.012" pos="0 0 0.162" rgba="0.78 0.85 0.88 1"/>
+      <geom name="pact_clutter_media_bottle_cap_g" class="hood" type="cylinder" size="0.030 0.014" pos="0 0 0.188" rgba="0.10 0.30 0.75 1"/>
+    </body>
+    <!-- LDPE wash bottle with spout, h=0.205 -->
+    <body name="pact_clutter_wash_bottle" mocap="true" pos="0 1.60 -2.0">
+      <geom name="pact_clutter_wash_bottle_body_g" class="hood" type="cylinder" size="0.036 0.075" pos="0 0 0.075" rgba="0.93 0.93 0.90 1"/>
+      <geom name="pact_clutter_wash_bottle_cap_g" class="hood" type="cylinder" size="0.020 0.012" pos="0 0 0.162" rgba="0.80 0.15 0.10 1"/>
+      <geom name="pact_clutter_wash_bottle_spout_g" class="hood" type="capsule" fromto="0 0 0.172 0.045 0 0.200" size="0.004" rgba="0.93 0.93 0.90 1"/>
+    </body>
+    <!-- 600 mL beaker, h=0.12 -->
+    <body name="pact_clutter_beaker" mocap="true" pos="0 1.75 -2.0">
+      <geom name="pact_clutter_beaker_body_g" class="hood" type="cylinder" size="0.045 0.06" pos="0 0 0.06" rgba="0.80 0.87 0.90 1"/>
+      <geom name="pact_clutter_beaker_band_g" type="cylinder" size="0.0455 0.025" pos="0 0 0.035" rgba="0.90 0.62 0.25 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+    <!-- 500 mL Erlenmeyer flask with solution, h=0.19 -->
+    <body name="pact_clutter_flask" mocap="true" pos="0 1.90 -2.0">
+      <geom name="pact_clutter_flask_t0_g" class="hood" type="cylinder" size="0.052 0.02" pos="0 0 0.02" rgba="0.45 0.70 0.85 1"/>
+      <geom name="pact_clutter_flask_t1_g" class="hood" type="cylinder" size="0.042 0.02" pos="0 0 0.06" rgba="0.45 0.70 0.85 1"/>
+      <geom name="pact_clutter_flask_t2_g" class="hood" type="cylinder" size="0.031 0.02" pos="0 0 0.10" rgba="0.80 0.88 0.90 1"/>
+      <geom name="pact_clutter_flask_t3_g" class="hood" type="cylinder" size="0.020 0.015" pos="0 0 0.135" rgba="0.80 0.88 0.90 1"/>
+      <geom name="pact_clutter_flask_neck_g" class="hood" type="cylinder" size="0.016 0.02" pos="0 0 0.17" rgba="0.80 0.88 0.90 1"/>
+    </body>
+    <!-- test-tube rack with five capped tubes, h=0.152 -->
+    <body name="pact_clutter_tube_rack" mocap="true" pos="0.3 1.30 -2.0">
+      <geom name="pact_clutter_tube_rack_base_g" class="hood" type="box" size="0.10 0.04 0.03" pos="0 0 0.03" rgba="0.25 0.45 0.80 1"/>
+      <geom name="pact_clutter_tube_rack_t0_g" class="hood" type="cylinder" size="0.008 0.05" pos="-0.08 0 0.09" rgba="0.88 0.90 0.86 1"/>
+      <geom name="pact_clutter_tube_rack_t1_g" class="hood" type="cylinder" size="0.008 0.05" pos="-0.04 0 0.09" rgba="0.88 0.90 0.86 1"/>
+      <geom name="pact_clutter_tube_rack_t2_g" class="hood" type="cylinder" size="0.008 0.05" pos="0 0 0.09" rgba="0.88 0.90 0.86 1"/>
+      <geom name="pact_clutter_tube_rack_t3_g" class="hood" type="cylinder" size="0.008 0.05" pos="0.04 0 0.09" rgba="0.88 0.90 0.86 1"/>
+      <geom name="pact_clutter_tube_rack_t4_g" class="hood" type="cylinder" size="0.008 0.05" pos="0.08 0 0.09" rgba="0.88 0.90 0.86 1"/>
+      <geom name="pact_clutter_tube_rack_c0_g" class="hood" type="cylinder" size="0.009 0.006" pos="-0.08 0 0.146" rgba="0.85 0.20 0.15 1"/>
+      <geom name="pact_clutter_tube_rack_c1_g" class="hood" type="cylinder" size="0.009 0.006" pos="-0.04 0 0.146" rgba="0.20 0.55 0.25 1"/>
+      <geom name="pact_clutter_tube_rack_c2_g" class="hood" type="cylinder" size="0.009 0.006" pos="0 0 0.146" rgba="0.95 0.80 0.15 1"/>
+      <geom name="pact_clutter_tube_rack_c3_g" class="hood" type="cylinder" size="0.009 0.006" pos="0.04 0 0.146" rgba="0.20 0.35 0.80 1"/>
+      <geom name="pact_clutter_tube_rack_c4_g" class="hood" type="cylinder" size="0.009 0.006" pos="0.08 0 0.146" rgba="0.60 0.25 0.60 1"/>
+    </body>
+    <!-- box of nitrile gloves, h=0.09 -->
+    <body name="pact_clutter_glove_box" mocap="true" pos="0.3 1.45 -2.0">
+      <geom name="pact_clutter_glove_box_g" class="hood" type="box" size="0.12 0.062 0.045" pos="0 0 0.045" rgba="0.30 0.50 0.85 1"/>
+      <geom name="pact_clutter_glove_box_top_g" type="box" size="0.05 0.03 0.0008" pos="0 0 0.0905" rgba="0.95 0.95 0.95 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+    <!-- magnetic stirrer hotplate carrying a beaker, h=0.202 -->
+    <body name="pact_clutter_hotplate" mocap="true" pos="0.3 1.60 -2.0">
+      <geom name="pact_clutter_hotplate_base_g" class="hood" type="box" size="0.085 0.10 0.04" pos="0 0 0.04" rgba="0.92 0.92 0.91 1"/>
+      <geom name="pact_clutter_hotplate_plate_g" class="hood" type="box" size="0.075 0.075 0.006" pos="0 0.015 0.086" rgba="0.22 0.22 0.24 1"/>
+      <geom name="pact_clutter_hotplate_knob0_g" type="cylinder" size="0.012 0.006" pos="-0.035 -0.103 0.04" euler="1.5708 0 0" rgba="0.15 0.15 0.15 1" contype="0" conaffinity="0" group="1"/>
+      <geom name="pact_clutter_hotplate_knob1_g" type="cylinder" size="0.012 0.006" pos="0.035 -0.103 0.04" euler="1.5708 0 0" rgba="0.15 0.15 0.15 1" contype="0" conaffinity="0" group="1"/>
+      <geom name="pact_clutter_hotplate_beaker_g" class="hood" type="cylinder" size="0.042 0.055" pos="0 0.015 0.147" rgba="0.80 0.87 0.90 1"/>
+    </body>
+    <!-- 10 L waste carboy, h=0.36 -->
+    <body name="pact_clutter_carboy" mocap="true" pos="0.3 1.75 -2.0">
+      <geom name="pact_clutter_carboy_body_g" class="hood" type="cylinder" size="0.10 0.14" pos="0 0 0.14" rgba="0.90 0.90 0.86 1"/>
+      <geom name="pact_clutter_carboy_shoulder_g" class="hood" type="cylinder" size="0.06 0.02" pos="0 0 0.30" rgba="0.90 0.90 0.86 1"/>
+      <geom name="pact_clutter_carboy_cap_g" class="hood" type="cylinder" size="0.035 0.02" pos="0 0 0.34" rgba="0.95 0.75 0.10 1"/>
+      <geom name="pact_clutter_carboy_label_g" type="cylinder" size="0.1005 0.04" pos="0 0 0.16" rgba="0.95 0.45 0.10 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+    <!-- ring stand with clamp, h=0.61 -->
+    <body name="pact_clutter_ring_stand" mocap="true" pos="0.3 1.90 -2.0">
+      <geom name="pact_clutter_ring_stand_base_g" class="hood" type="box" size="0.10 0.065 0.006" pos="0 0 0.006" rgba="0.25 0.26 0.28 1"/>
+      <geom name="pact_clutter_ring_stand_rod_g" class="hood" type="cylinder" size="0.0065 0.30" pos="-0.06 0 0.312" rgba="0.72 0.73 0.75 1"/>
+      <geom name="pact_clutter_ring_stand_clamp_g" class="hood" type="box" size="0.05 0.010 0.010" pos="-0.02 0 0.42" rgba="0.55 0.56 0.58 1"/>
+      <geom name="pact_clutter_ring_stand_ring_g" class="hood" type="cylinder" size="0.03 0.004" pos="0.04 0 0.42" rgba="0.55 0.56 0.58 1"/>
+    </body>
+    <!-- sharps disposal bin, h=0.222 -->
+    <body name="pact_clutter_sharps_bin" mocap="true" pos="0.6 1.30 -2.0">
+      <geom name="pact_clutter_sharps_bin_body_g" class="hood" type="box" size="0.075 0.06 0.10" pos="0 0 0.10" rgba="0.80 0.12 0.10 1"/>
+      <geom name="pact_clutter_sharps_bin_lid_g" class="hood" type="box" size="0.077 0.062 0.012" pos="0 0 0.21" rgba="0.95 0.80 0.15 1"/>
+    </body>
+    <!-- pipette tip box, h=0.065 -->
+    <body name="pact_clutter_tip_box" mocap="true" pos="0.6 1.45 -2.0">
+      <geom name="pact_clutter_tip_box_body_g" class="hood" type="box" size="0.06 0.04 0.028" pos="0 0 0.028" rgba="0.20 0.40 0.80 1"/>
+      <geom name="pact_clutter_tip_box_lid_g" class="hood" type="box" size="0.062 0.042 0.0045" pos="0 0 0.0605" rgba="0.75 0.82 0.92 1"/>
+    </body>
+    <!-- 250 mL amber bottle, h=0.154 -->
+    <body name="pact_clutter_amber_bottle" mocap="true" pos="0.6 1.60 -2.0">
+      <geom name="pact_clutter_amber_bottle_body_g" class="hood" type="cylinder" size="0.035 0.055" pos="0 0 0.055" rgba="0.42 0.22 0.07 1"/>
+      <geom name="pact_clutter_amber_bottle_neck_g" class="hood" type="cylinder" size="0.015 0.010" pos="0 0 0.120" rgba="0.42 0.22 0.07 1"/>
+      <geom name="pact_clutter_amber_bottle_cap_g" class="hood" type="cylinder" size="0.017 0.012" pos="0 0 0.142" rgba="0.08 0.08 0.08 1"/>
+      <geom name="pact_clutter_amber_bottle_label_g" type="cylinder" size="0.0355 0.025" pos="0 0 0.055" rgba="0.95 0.95 0.92 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+    <!-- 250 mL graduated cylinder, h=0.292 -->
+    <body name="pact_clutter_grad_cylinder" mocap="true" pos="0.6 1.75 -2.0">
+      <geom name="pact_clutter_grad_cylinder_foot_g" class="hood" type="cylinder" size="0.035 0.006" pos="0 0 0.006" rgba="0.80 0.87 0.90 1"/>
+      <geom name="pact_clutter_grad_cylinder_tube_g" class="hood" type="cylinder" size="0.018 0.14" pos="0 0 0.152" rgba="0.80 0.87 0.90 1"/>
+      <geom name="pact_clutter_grad_cylinder_fill_g" type="cylinder" size="0.0185 0.07" pos="0 0 0.082" rgba="0.50 0.72 0.85 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+
+    <!-- goal decal: yellow tape ring on the work surface (contactless). -->
+    <body name="pc_push_goal_marker" mocap="true" pos="0.9 1.90 -2.0">
+      <geom name="pc_push_goal_marker_outer_g" type="cylinder" size="0.050 0.0003" pos="0 0 0.0003" rgba="0.98 0.82 0.08 1" contype="0" conaffinity="0" group="1"/>
+      <geom name="pc_push_goal_marker_inner_g" type="cylinder" size="0.038 0.0003" pos="0 0 0.0009" rgba="0.86 0.87 0.88 1" contype="0" conaffinity="0" group="1"/>
+    </body>
+  </worldbody>
+</mujoco>
